@@ -81,50 +81,98 @@ class MocapDataset(Dataset):
             joint_gt_body = np.dot(self.smplx.J_regressor, mesh_gt)[:22]
             joint_out_body = np.dot(self.smplx.J_regressor, mesh_out[idx])[:22]
             joint_out_body_align = rigid_align(joint_out_body, joint_gt_body)
-            eval_result['pa_mpjpe_body'].append(np.sqrt(np.sum((joint_out_body_align-joint_gt_body) ** 2, axis=1)).mean() * 1000)
+            eval_result['pa_mpjpe_body'].append(
+                np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, axis=1)).mean() * 1000)
             joint_out_body_align = joint_out_body - joint_out_body[self.smplx.J_regressor_idx['pelvis'], None, :] + \
                                    joint_gt_body[self.smplx.J_regressor_idx['pelvis'], None, :]
-            eval_result['mpjpe_body'].append(np.sqrt(np.sum((joint_out_body_align-joint_gt_body) ** 2, axis=1)).mean() * 1000)
+            eval_result['mpjpe_body'].append(
+                np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, axis=1)).mean() * 1000)
 
         return eval_result
 
+    def eval_arctic_wholebody(self, pred_vertices, gt_vertices):
+        eval_result = {
+            'pa_mpvpe_all': [], 'mpvpe_all': [],
+            'pa_mpvpe_hand': [], 'mpvpe_hand': [],
+            'pa_mpvpe_face': [], 'mpvpe_face': [],
+            'pa_mpjpe_body': [], 'pa_mpjpe_hand': []
+        }
+        batchsize = pred_vertices.shape[0]
+        mesh_out_all = pred_vertices.detach().cpu().numpy()
+        for idx in range(batchsize):
+            mesh_gt = gt_vertices[idx]
 
-    def eval_EHF_multi_hypo(self, pred_results, gt_ply_path):
-        #  pred_results: list of results tuple (pose, betas, camera_translation, reprojection_loss)
-        eval_result = {'pa_mpjpe_body': float('inf'), 'mpjpe_body': float('inf'), 'pck_body': 0.0}
-        threshold = 0.15
+            # MPVPE from all vertices
+            mesh_out = mesh_out_all[idx]
+            mesh_out_align = rigid_align(mesh_out, mesh_gt)
+            eval_result['pa_mpvpe_all'].append(np.sqrt(np.sum((mesh_out_align - mesh_gt) ** 2, 1)).mean() * 1000)
+            mesh_out_align = mesh_out - np.dot(self.smplx.J_regressor, mesh_out)[self.smplx.J_regressor_idx['pelvis'],
+                                        None,
+                                        :] + np.dot(self.smplx.J_regressor, mesh_gt)[
+                                             self.smplx.J_regressor_idx['pelvis'], None,
+                                             :]
+            eval_result['mpvpe_all'].append(np.sqrt(np.sum((mesh_out_align - mesh_gt) ** 2, 1)).mean() * 1000)
 
-        mesh_gt = load_ply(gt_ply_path)
-        mesh_gt = np.dot(self.cam_param['R'], mesh_gt.transpose(1, 0)).transpose(1, 0)
-        joint_gt_body = np.dot(self.smplx.J_regressor, mesh_gt)[:22]
-        pelvis_idx = self.smpl.J_regressor_idx['pelvis']
-        gt_pelvis = joint_gt_body[pelvis_idx, None, :]
+            # MPVPE from hand vertices
+            mesh_gt_lhand = mesh_gt[self.smplx.hand_vertex_idx['left_hand'], :]
+            mesh_out_lhand = mesh_out[self.smplx.hand_vertex_idx['left_hand'], :]
+            mesh_out_lhand_align = rigid_align(mesh_out_lhand, mesh_gt_lhand)
+            mesh_gt_rhand = mesh_gt[self.smplx.hand_vertex_idx['right_hand'], :]
+            mesh_out_rhand = mesh_out[self.smplx.hand_vertex_idx['right_hand'], :]
+            mesh_out_rhand_align = rigid_align(mesh_out_rhand, mesh_gt_rhand)
+            eval_result['pa_mpvpe_hand'].append((np.sqrt(
+                np.sum((mesh_out_lhand_align - mesh_gt_lhand) ** 2, 1)).mean() * 1000 + np.sqrt(
+                np.sum((mesh_out_rhand_align - mesh_gt_rhand) ** 2, 1)).mean() * 1000) / 2.)
 
-        for i in range(len(pred_results)):
-            pose, betas, camera_translation, reprojection_loss = pred_results[i]
+            mesh_out_lhand_align = mesh_out_lhand - np.dot(self.smplx.J_regressor, mesh_out)[
+                                                    self.smplx.J_regressor_idx['lwrist'], None, :] + np.dot(
+                self.smplx.J_regressor, mesh_gt)[self.smplx.J_regressor_idx['lwrist'], None, :]
+            mesh_out_rhand_align = mesh_out_rhand - np.dot(self.smplx.J_regressor, mesh_out)[
+                                                    self.smplx.J_regressor_idx['rwrist'], None, :] + np.dot(
+                self.smplx.J_regressor, mesh_gt)[self.smplx.J_regressor_idx['rwrist'], None, :]
+            eval_result['mpvpe_hand'].append((np.sqrt(
+                np.sum((mesh_out_lhand_align - mesh_gt_lhand) ** 2, 1)).mean() * 1000 + np.sqrt(
+                np.sum((mesh_out_rhand_align - mesh_gt_rhand) ** 2, 1)).mean() * 1000) / 2.)
 
-            mesh_out = self.smplx(betas=betas,
-                                  body_pose=pose[:, 3:66],
-                                  global_orient=pose[:, :3],
-                                  trans=camera_translation).v.detach().cpu().numpy()[0]
+            # MPVPE from face vertices
+            mesh_gt_face = mesh_gt[self.smplx.face_vertex_idx, :]
+            mesh_out_face = mesh_out[self.smplx.face_vertex_idx, :]
+            mesh_out_face_align = rigid_align(mesh_out_face, mesh_gt_face)
+            eval_result['pa_mpvpe_face'].append(
+                np.sqrt(np.sum((mesh_out_face_align - mesh_gt_face) ** 2, 1)).mean() * 1000)
+            mesh_out_face_align = mesh_out_face - np.dot(self.smplx.J_regressor, mesh_out)[
+                                                  self.smplx.J_regressor_idx['neck'],
+                                                  None, :] + np.dot(self.smplx.J_regressor, mesh_gt)[
+                                                             self.smplx.J_regressor_idx['neck'], None, :]
+            eval_result['mpvpe_face'].append(
+                np.sqrt(np.sum((mesh_out_face_align - mesh_gt_face) ** 2, 1)).mean() * 1000)
 
-            joint_out_body = np.dot(self.smplx.J_regressor, mesh_out)[:22]
+            # MPJPE from body joints
+            joint_gt_body = np.dot(self.smplx.j14_regressor, mesh_gt)
+            joint_out_body = np.dot(self.smplx.j14_regressor, mesh_out)
             joint_out_body_align = rigid_align(joint_out_body, joint_gt_body)
-            pa_mpjpe = np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, axis=1)).mean() * 1000
-            eval_result['pa_mpjpe_body'] = min(eval_result['pa_mpjpe_body'], pa_mpjpe)
-            joint_out_body_align = joint_out_body - joint_out_body[pelvis_idx, None, :] + gt_pelvis
-            mpjpe = np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, axis=1)).mean() * 1000
-            eval_result['mpjpe_body'] = min(eval_result['mpjpe_body'], mpjpe)
-            # Calculate PCK
-            distances = np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, axis=1))
-            pck = np.mean(distances <= threshold)
-            eval_result['pck_body'] = max(eval_result['pck_body'], pck)
+            eval_result['pa_mpjpe_body'].append(
+                np.sqrt(np.sum((joint_out_body_align - joint_gt_body) ** 2, 1)).mean() * 1000)
+
+            # MPJPE from hand joints
+            joint_gt_lhand = np.dot(self.smplx.orig_hand_regressor['left'], mesh_gt)
+            joint_out_lhand = np.dot(self.smplx.orig_hand_regressor['left'], mesh_out)
+            joint_out_lhand_align = rigid_align(joint_out_lhand, joint_gt_lhand)
+            joint_gt_rhand = np.dot(self.smplx.orig_hand_regressor['right'], mesh_gt)
+            joint_out_rhand = np.dot(self.smplx.orig_hand_regressor['right'], mesh_out)
+            joint_out_rhand_align = rigid_align(joint_out_rhand, joint_gt_rhand)
+            eval_result['pa_mpjpe_hand'].append((np.sqrt(
+                np.sum((joint_out_lhand_align - joint_gt_lhand) ** 2, 1)).mean() * 1000 + np.sqrt(
+                np.sum((joint_out_rhand_align - joint_gt_rhand) ** 2, 1)).mean() * 1000) / 2.)
 
         return eval_result
-
 
     def print_eval_result(self, eval_result):
         print('PA MPJPE (Body): %.2f mm' % np.mean(eval_result['pa_mpjpe_body']))
         print('MPJPE (Body): %.2f mm' % np.mean(eval_result['mpjpe_body']))
         if 'pck_body' in eval_result:
             print('PCK: %.5f mm' % np.mean(eval_result['pck_body']))
+
+    def print_eval_result_wholebody(self, eval_result):
+        for key in eval_result:
+            print(f'{key}: {np.mean(eval_result[key]):.2f} mm')

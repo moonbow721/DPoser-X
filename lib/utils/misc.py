@@ -5,7 +5,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
-from lib.body_model.utils import BodyPartIndices, HandPartIndices
+from lib.body_model.utils import BodyPartIndices, HandPartIndices, OpHandPartIndices, FacePartIndices
 from lib.body_model import constants
 from lib.utils.transforms import rot6d_to_axis_angle
 
@@ -15,7 +15,9 @@ def to_device(data, device):
         return [to_device(d, device) for d in data]
     elif isinstance(data, dict):
         return {key: to_device(value, device) for key, value in data.items()}
-    return data.to(device)
+    elif isinstance(data, torch.Tensor):
+        return data.to(device)
+    return data
 
 
 def add_noise(gts, std=0.5, noise_type='gaussian'):
@@ -76,6 +78,51 @@ def create_mask(body_poses, part='legs', model='body', observation_type='noise')
     return mask, observation
 
 
+def create_wholebody_mask(body_poses, part='lhand', observation_type='noise', mask_root=True):
+    # body_poses: [batchsize, 3*N_POSES+100] (axis-angle) or [batchsize, 6*N_POSES+100] (rot6d)
+    N_POSES = 21+15*2+1
+    assert len(body_poses.shape) == 2 and (body_poses.shape[1]-100) % N_POSES == 0, body_poses.shape
+    rot_N = (body_poses.shape[1]-100) // N_POSES
+    assert rot_N in [3, 6], body_poses.shape
+
+    mask = body_poses.new_ones(body_poses.shape, dtype=torch.bool)
+    mask_type = part
+    if part == 'lhand':
+        mask_indices = list(range(21*rot_N, (21+15)*rot_N))
+        if mask_root:
+            mask_indices += list(range(19*rot_N, 20*rot_N))
+    elif part == 'rhand':
+        mask_indices = list(range((21+15)*rot_N, (21+15*2)*rot_N))
+        if mask_root:
+            mask_indices += list(range(20*rot_N, 21*rot_N))
+    elif part == 'face':
+        mask_indices = list(range((21+15*2)*rot_N, (21+15*2+1)*rot_N + 100))
+    elif part == 'one_hand':
+        # mask one hand randomly
+        if random.random() < 0.5:
+            mask_type = 'lhand'
+            mask_indices = list(range(21*rot_N, (21+15)*rot_N))
+            if mask_root:
+                mask_indices += list(range(19*rot_N, 20*rot_N))
+        else:
+            mask_type = 'rhand'
+            mask_indices = list(range((21+15)*rot_N, (21+15*2)*rot_N))
+            if mask_root:
+                mask_indices += list(range(20*rot_N, 21*rot_N))
+    else:
+        raise ValueError(f'Unknown part: {part}')
+    mask[:, mask_indices] = 0
+
+    # masked data as Gaussian noise
+    observation = body_poses.clone()
+    if observation_type == 'noise':
+        observation[:, mask_indices] = torch.randn_like(observation[:, mask_indices])
+    else:
+        observation[:, mask_indices] = torch.zeros_like(observation[:, mask_indices])
+
+    return mask, observation, mask_type
+
+
 def create_random_mask(body_poses, min_mask_rate=0.2, max_mask_rate=0.4, model='body', observation_type='noise'):
     # body_poses: [batchsize, 3*N_POSES] (axis-angle) or [batchsize, 6*N_POSES] (rot6d)
     if model == 'body':
@@ -108,19 +155,62 @@ def create_random_mask(body_poses, min_mask_rate=0.2, max_mask_rate=0.4, model='
     return mask, observation
 
 
-def create_joint_mask(body_joints, part='legs', model='body'):
+def create_random_part_mask(batchsize, device, mask_prob=0.3, rot_N=3, apply_loss=True,):
+    # mask_prob: the probability of masking a part,
+    # part_mask: [batchsize, 4], loss_mask: [batchsize, 52*rot_N+100]
+    loss_indices = [list(range(21*rot_N)), list(range(21*rot_N, 36*rot_N)),
+                    list(range(36*rot_N, 51*rot_N)), list(range(51*rot_N, 52*rot_N+100))]
+    part_mask = torch.rand(batchsize, 4, device=device) < mask_prob
+    loss_mask = torch.ones(batchsize, 52*rot_N+100, dtype=torch.bool).to(device)
+    if not apply_loss:
+        for idx in range(4):
+            loss_mask[:, loss_indices[idx]] = part_mask[:, idx].unsqueeze(1)
+
+    return part_mask, loss_mask
+
+
+def apply_random_part_mask(original_mask, mask_prob=0.3, rot_N=3, apply_loss=True):
+    # mask_prob: the probability of masking a part,
+    # original_mask: [batchsize, 4], dtype=torch.bool
+    # part_mask: [batchsize, 4], loss_mask: [batchsize, 52*rot_N+100]
+    batchsize = original_mask.shape[0]
+    loss_indices = [list(range(21 * rot_N)), list(range(21 * rot_N, 36 * rot_N)),
+                    list(range(36 * rot_N, 51 * rot_N)), list(range(51 * rot_N, 52 * rot_N + 100))]
+    loss_mask = torch.ones(batchsize, 52 * rot_N + 100, dtype=torch.bool).to(original_mask.device)
+    for idx in range(4):
+        loss_mask[:, loss_indices[idx]] = original_mask[:, idx].unsqueeze(1)
+    if mask_prob == 0.0:
+        return original_mask, loss_mask
+
+    # mask the fully_visible samples with mask_prob
+    fully_visible = torch.all(original_mask, dim=1)
+    combined_mask = original_mask.clone()
+    combined_mask[fully_visible] = torch.rand(fully_visible.sum(), 4, device=original_mask.device) < mask_prob
+
+    if not apply_loss:  # apply the mask to the loss_mask for random part masking
+        for idx in range(4):
+            loss_mask[:, loss_indices[idx]] = combined_mask[:, idx].unsqueeze(1)
+
+    return combined_mask, loss_mask
+
+
+def create_joint_mask(body_joints, part='legs', mask_type=None, model='body'):
     # body_joints: [batchsize, 22, 3]
     if model == 'body':
-        N_POSES = 21
+        N_JOINTS = 22
         PartIndices = BodyPartIndices
     elif model == 'hand':
-        N_POSES = 15
+        N_JOINTS = 16
         PartIndices = HandPartIndices
+    elif model == 'face':
+        N_JOINTS = 73
+        PartIndices = FacePartIndices
     else:
         raise ValueError(f'Unknown model: {model}')
-    assert len(body_joints.shape) == 3 and body_joints.shape[1] == N_POSES + 1  # +1 for root joint
+    assert len(body_joints.shape) == 3 and body_joints.shape[1] == N_JOINTS
 
-    mask_indices = [x+1 for x in PartIndices.get_indices(part)]
+    mask_indices = PartIndices.create_mask(mask_type) if mask_type is not None else PartIndices.get_joint_indices(part)
+    visible_indices = [i for i in range(N_JOINTS) if i not in mask_indices]
     mask = body_joints.new_ones(body_joints.shape, dtype=torch.bool)
     mask_indices = torch.tensor(mask_indices)
     mask[:, mask_indices, :] = False
@@ -129,7 +219,29 @@ def create_joint_mask(body_joints, part='legs', model='body'):
     observation = body_joints.clone()
     observation[:, mask_indices] = torch.randn_like(observation[:, mask_indices]) * 0.1
 
-    return mask, observation
+    return mask, observation, mask_indices, visible_indices
+
+
+def create_OpJtr_mask(body_joints, part='index_finger', mask_type=None, model='hand'):
+    # hand_OpJtr: [batchsize, 21, 3]
+    if model == 'hand':
+        N_JOINTS = 21
+        PartIndices = OpHandPartIndices
+    else:
+        raise ValueError(f'Unknown model: {model}')
+    assert len(body_joints.shape) == 3 and body_joints.shape[1] == N_JOINTS, body_joints.shape
+
+    mask_indices = PartIndices.create_mask(mask_type) if mask_type is not None else PartIndices.get_indices(part)
+    visible_indices = [i for i in range(N_JOINTS) if i not in mask_indices]
+    mask = body_joints.new_ones(body_joints.shape, dtype=torch.bool)
+    mask_indices = torch.tensor(mask_indices)
+    mask[:, mask_indices, :] = False
+
+    # masked data as Gaussian noise
+    observation = body_joints.clone()
+    observation[:, mask_indices] = torch.randn_like(observation[:, mask_indices]) * 0.05
+
+    return mask, observation, mask_indices, visible_indices
 
 
 def create_stable_mask(mask, eps=1e-6):
@@ -242,36 +354,3 @@ def rbf_kernel(X, Y, gamma=-1, ad=1):
     dK_dX = torch.sum(dK, dim=1)
 
     return K, dK_dX
-
-
-if __name__ == '__main__':
-    import matplotlib.pyplot as plt
-    # Generate two random latent vectors
-    A = torch.randn(5, 5, 3)
-    B = torch.randn(5, 5, 3)
-    # Number of frames for interpolation
-    num_frames = 100
-
-    # Perform interpolations
-    linear_results = lerp(A, B, num_frames)[:, 2, 2]
-    slerp_results = slerp(A, B, num_frames)[:, 2, 2]
-    print(linear_results.shape, slerp_results.shape)
-
-    # Plotting the results
-    plt.figure(figsize=(12, 6))
-
-    # Linear Interpolation Plot
-    plt.subplot(1, 2, 1)
-    for i in range(3):  # Loop over each dimension
-        plt.plot(linear_results[:, i].numpy(), label=f'Dim {i + 1}')
-    plt.title("Linear Interpolation")
-    plt.legend()
-
-    # SLERP Interpolation Plot
-    plt.subplot(1, 2, 2)
-    for i in range(3):  # Loop over each dimension
-        plt.plot(slerp_results[:, i].numpy(), label=f'Dim {i + 1}')
-    plt.title("SLERP Interpolation")
-    plt.legend()
-
-    plt.savefig('./interpolation.png')

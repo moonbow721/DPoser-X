@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from lib.body_model import constants
-from lib.body_model.fitting_losses import *
+from lib.body_model.fitting_losses import guess_init, perspective_projection
 from lib.body_model.joint_mapping import mmpose_to_openpose, vitpose_to_openpose
 from lib.body_model.smpl import SMPLX
 from lib.body_model.visual import Renderer, vis_keypoints_with_skeleton
@@ -18,19 +18,15 @@ from lib.utils.transforms import cam_crop2full
 from .smplify import SMPLify
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--prior', type=str, default='DPoser', choices=['DPoser', 'VPoser', 'GMM', 'Posendf', 'None'],
-                    help='Our prior model or competitors')
+parser.add_argument('--prior', type=str, default='DPoser', choices=['DPoser', 'None'],)
 parser.add_argument('--kpts', type=str, default='vitpose', choices=['mmpose', 'vitpose', 'openpose'])
 
-
-parser.add_argument('--dataset-folder', type=str,
-                    default='../data/human/Bodydataset/amass_processed', help='dataset root')
-parser.add_argument('--version', type=str, default='version1', help='dataset version')
+parser.add_argument('--data-path', type=str, default='./data/body_data')
 parser.add_argument('--bodymodel-path', type=str, default='../body_models/smplx/SMPLX_NEUTRAL.npz',
                     help='path of SMPLX model')
 
 parser.add_argument('--ckpt-path', type=str,
-                    default='./pretrained_models/amass/BaseMLP/epoch=36-step=150000-val_mpjpe=38.17.ckpt',
+                    default='./pretrained_models/body/BaseMLP/last.ckpt',
                     help='load trained diffusion model for DPoser')
 parser.add_argument('--config-path', type=str,
                     default='configs.body.subvp.timefc.get_config',
@@ -39,15 +35,16 @@ parser.add_argument('--time-strategy', type=str, default='3', choices=['1', '2',
                     help='random, fix, truncated annealing')
 
 parser.add_argument('--img', type=str, required=True, help='Path to input image')
-parser.add_argument('--kpt_path', type=str, default=None, help='Path to .json containing kpts detections')
+parser.add_argument('--kpt_path', type=str, required=True, help='Path to .json containing kpts detections')
 parser.add_argument('--init_camera', type=str, default='optimized', choices=['fixed', 'optimized'])
 
-parser.add_argument('--outdir', type=str, default='./output/test_results/hmr',
+parser.add_argument('--outdir', type=str, default='./output/body/test_results/hmr',
                     help='output directory of fitting visualization results')
 parser.add_argument('--device', type=str, default='cuda:0')
 
 
 if __name__ == '__main__':
+    torch.manual_seed(0)
     args = parser.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     device = args.device
@@ -77,7 +74,7 @@ if __name__ == '__main__':
 
     bboxes = compute_bbox([keypoints])
     ratio = (bboxes[0, 3] - bboxes[0, 1]) / (bboxes[0, 4] - bboxes[0, 2])
-    bend_init = ratio > 0.75
+    bend_init = ratio > 0.8
     if bend_init:
         bboxes[0, 2] /= 3
         print('The person is not standing, use bend pose as initialization')
@@ -149,14 +146,14 @@ if __name__ == '__main__':
         if enable_visual:
             # re-project to 2D keypoints on image plane
             pred_keypoints3d = pred_output.joints
-            img_with_kpts = vis_keypoints_with_skeleton(img_bgr, keypoints, kp_thresh=0.1, radius=2)
+            img_with_kpts = vis_keypoints_with_skeleton(img_bgr, keypoints, kp_thresh=0.1, radius=5)
             cv2.imwrite(os.path.join(args.outdir, f"{img_name}_kpt2d_gt.jpg"), img_with_kpts)
             rotation = torch.eye(3, device=device).unsqueeze(0).expand(pred_keypoints3d.shape[0], -1, -1)
             projected_joints = perspective_projection(pred_keypoints3d, rotation, new_opt_cam_t,
                                                       focal_length, camera_center).detach().cpu().numpy()
             dummy_confidence = np.ones((projected_joints.shape[0], projected_joints.shape[1], 1))
             projected_joints = np.concatenate([projected_joints, dummy_confidence], axis=-1)
-            img_with_kpts = vis_keypoints_with_skeleton(img_bgr, projected_joints[0, :25], kp_thresh=0.1, radius=2)
+            img_with_kpts = vis_keypoints_with_skeleton(img_bgr, projected_joints[0, :25], kp_thresh=0.1, radius=5)
             cv2.imwrite(os.path.join(args.outdir, f"{img_name}_kpt2d_pred.jpg"), img_with_kpts)
 
             # visualize predicted mesh

@@ -16,7 +16,7 @@ from lib.body_model.body_model import BodyModel
 from lib.body_model.visual import render_mesh, multiple_render
 from lib.dataset.body import N_POSES, Evaler
 from lib.utils.generic import load_pl_weights, load_model
-from lib.utils.metric import evaluate_fid, evaluate_prdc, average_pairwise_distance, self_intersections_percentage
+from lib.utils.metric import evaluate_fid, evaluate_prdc, average_pairwise_distance
 from lib.utils.misc import create_mask
 
 FLAGS = flags.FLAGS
@@ -32,7 +32,7 @@ princpt = [200, 192]
 
 
 def parse_args(argv):
-    parser = argparse_flags.ArgumentParser(description='visualize the save files and demo on toy data')
+    parser = argparse_flags.ArgumentParser(description='DPoser-body demo on toy data')
 
     parser.add_argument('--file-path', type=str, default='./examples/toy_body_data.npz', help='saved npz file')
     parser.add_argument('--task', type=str, default='view', choices=['view',
@@ -47,14 +47,12 @@ def parse_args(argv):
     parser.add_argument('--mode', default='DPoser', choices=['DPoser', 'ScoreSDE', 'MCG', 'DPS'],
                         help='different solvers for completion task')
 
-    parser.add_argument('--dataset-folder', type=str,
-                        default='../data/human/Bodydataset/amass_processed', help='dataset root')
-    parser.add_argument('--version', type=str, default='version1', help='dataset version')
+    parser.add_argument('--data-path', type=str, default='./data/body_data',)
     parser.add_argument('--bodymodel-path', type=str,
                         default='../body_models/smplx/SMPLX_NEUTRAL.npz',
                         help='load SMPLX for visualization')
     parser.add_argument('--ckpt-path', type=str,
-                        default='./pretrained_models/amass/BaseMLP/epoch=36-step=150000-val_mpjpe=38.17.ckpt',
+                        default='./pretrained_models/body/BaseMLP/last.ckpt',
                         help='load trained diffusion model')
 
     parser.add_argument('--view', type=str, default='front', help='render direction')
@@ -74,8 +72,7 @@ def main(args):
     """
     save_renders = partial(multiple_render, bg_img=bg_img, focal=focal, princpt=princpt, device=args.device)
 
-    if not os.path.exists(args.output_path):
-        os.makedirs(args.output_path)
+    os.makedirs(args.output_path, exist_ok=True)
     sample_num = 50
     body_model = BodyModel(bm_path=args.bodymodel_path,
                            num_betas=10,
@@ -103,14 +100,14 @@ def main(args):
     model = create_model(config.model, N_POSES, POSE_DIM)
     model.to(args.device)
     model.eval()
-    load_model(model, config, args.ckpt_path, args.device, is_ema=True)
+    load_model(model, config.model, args.ckpt_path, args.device, is_ema=True)
 
     inverse_scaler = lambda x: x
     likelihood_fn = likelihood.get_likelihood_fn(sde, inverse_scaler, rtol=1e-4, atol=1e-4, eps=1e-4)
 
-    Normalizer = Posenormalizer(data_path=f'{args.dataset_folder}/{args.version}/train',
-                                normalize=config.data.normalize,
-                                min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=args.device)
+    Normalizer = Posenormalizer(
+        data_path=os.path.join(args.data_path, 'body_normalizer'),
+        min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=args.device)
     denormalize_fn = Normalizer.offline_denormalize
 
     if args.task == 'generation':
@@ -140,9 +137,9 @@ def main(args):
                                                    device=args.device)
         _, samples = default_sampler(model, observation=None)
         samples = denormalize_fn(samples, to_axis=True)
-        fid = evaluate_fid(samples, f'{args.dataset_folder}/{args.version}/statistics.npz')
+        fid = evaluate_fid(samples, f'{args.data_path}/version1/statistics.npz')
         print('FID for 50000 generated samples', fid)
-        prdc = evaluate_prdc(samples, f'{args.dataset_folder}/{args.version}/reference_batch.npz')
+        prdc = evaluate_prdc(samples, f'{args.data_path}/version1/reference_batch.pt')
         print(prdc)
 
         samples = samples[:500]
@@ -157,14 +154,13 @@ def main(args):
         joints3d = body_out.Jtr
         body_joints3d = joints3d[:, :22, :]
         APD = average_pairwise_distance(body_joints3d)
-        SI = self_intersections_percentage(body_out.v, body_out.f).mean().item()
         print('average_pairwise_distance for 500 generated samples', APD)
-        print('self-intersections percentage for 500 generated samples', SI)
 
         return
 
     elif args.task == 'generation_process':
         target_path = os.path.join(args.output_path, 'generation_process')
+        os.makedirs(target_path, exist_ok=True)
 
         video_num = 10
         sampling_shape = (video_num, N_POSES * POSE_DIM)
@@ -218,8 +214,7 @@ def main(args):
 
     if args.task == 'view':
         target_path = os.path.join(args.output_path, 'view')
-        if not os.path.exists(target_path):
-            os.makedirs(target_path)
+        os.makedirs(target_path, exist_ok=True)
         save_renders(body_poses, None, body_model, target_path, 'GT_sample{}.png', convert=False, faster=args.faster)
         print(f'rendered images saved under {target_path}')
         return
@@ -237,7 +232,7 @@ def main(args):
         comp_sampler = sampling.get_sampling_fn(config, sde, body_poses.shape, inverse_scaler, sampling_eps,
                                                 device=args.device, inverse_solver=inverse_solver)
 
-        comp_fn = DPoserComp(model, sde, config.training.continuous, batch_size=sample_num, improve_baseline=True)
+        comp_fn = DPoserComp(model, sde, config.training.continuous, improve_baseline=False)
         body_model = BodyModel(bm_path=args.bodymodel_path,
                                num_betas=10,
                                batch_size=sample_num,

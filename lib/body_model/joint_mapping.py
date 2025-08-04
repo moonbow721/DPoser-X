@@ -4,7 +4,7 @@ import numpy as np
 
 
 # We convert all other versions of joints to OpenPose 135 format
-# From https://github.com/vchoutas/smplify-x/blob/master/smplifyx/utils.py
+# Adapted from https://github.com/vchoutas/smplify-x/blob/master/smplifyx/utils.py
 # Please see license for usage restrictions.
 def smpl_to_openpose(model_type='smplx', use_hands=True, use_face=True,
                      use_face_contour=False, openpose_format='coco25'):
@@ -62,9 +62,9 @@ def smpl_to_openpose(model_type='smplx', use_hands=True, use_face=True,
 
                 mapping += [lhand_mapping, rhand_mapping]
             if use_face:
-                #  end_idx = 127 + 17 * use_face_contour
-                face_mapping = np.arange(76, 127 + 17 * use_face_contour,
-                                         dtype=np.int32)
+                face_mapping = np.arange(76, 127, dtype=np.int32)
+                if use_face_contour:
+                    face_mapping = np.concatenate((np.arange(127, 127 + 17, dtype=np.int32), face_mapping))
                 mapping += [face_mapping]
 
             return np.concatenate(mapping)
@@ -122,7 +122,7 @@ def mano_to_openpose():
     pass
 
 
-# The Jtr in output is already in the order of openpose (smplx == openpose)
+# The OpJtr in output is already in the order of openpose
 def flame_to_openpose():
     pass
 
@@ -132,11 +132,11 @@ def get_openpose_part(part='body'):
     if part == 'body':
         return np.arange(0, 25)
     elif part == 'lhand':
-        return np.arange(25, 25+21)
+        return np.arange(25, 25 + 21)
     elif part == 'rhand':
-        return np.arange(25+21, 25+21+21)
+        return np.arange(25 + 21, 25 + 21 + 21)
     elif part == 'face':
-        return np.arange(25+21+21, 25+21+21+68)
+        return np.arange(25 + 21 + 21, 25 + 21 + 21 + 68)
     else:
         raise ValueError(f"Invalid part: {part}")
 
@@ -171,7 +171,6 @@ joint_set_coco = {
          (126, 130), (127, 129), (131, 133)  # face lip
          )
 }
-
 
 joint_set_openpose = {
     'joint_num': 135,  # body 25, lhand 21, rhand 21, face 68
@@ -235,7 +234,7 @@ def mmpose_to_openpose(keypoints, keypoint_scores):
     idx_mapping = coco_to_openpose()
 
     return merged_joints[idx_mapping]
-    
+
 
 def vitpose_to_openpose(keypoints):
     # array: [133, 3] -> array: [135, 3]

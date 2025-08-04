@@ -1,3 +1,5 @@
+import os
+
 import torch
 from torch import nn
 
@@ -21,7 +23,7 @@ class DPoser(nn.Module):
         config = import_configs(config_path)
 
         self.Normalizer = Posenormalizer(
-            data_path=f'{args.dataset_folder}/{args.version}/train',
+            data_path=os.path.join(args.data_path, 'body_normalizer'),
             min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=args.device)
 
         diffusion_model = self.load_model(config, args)
@@ -49,7 +51,7 @@ class DPoser(nn.Module):
         model = create_model(config.model, N_POSES, POSE_DIM)
         model.to(self.device)
         model.eval()
-        load_model(model, config, args.ckpt_path, args.device, is_ema=True)
+        load_model(model, config.model, args.ckpt_path, args.device, is_ema=True)
         return model
 
     def one_step_denoise(self, x_t, t):
@@ -76,7 +78,7 @@ class DPoser(nn.Module):
         SNR = alpha / sigma[:, None]
         return x_current.detach(), SNR
 
-    def DPoser_loss(self, x_0, vec_t, multi_denoise=True):
+    def DPoser_loss(self, x_0, vec_t, multi_denoise=False):
         # x_0: [B, j*6], vec_t: [B], quan_t: [1]
         z = torch.randn_like(x_0)
         mean, std = self.sde.marginal_prob(x_0, vec_t)
@@ -127,22 +129,6 @@ class SMPLify:
             self.t_max = 0.12
             self.t_min = 0.08
             self.fixed_t = 0.10
-        elif args.prior == 'GMM':
-            from lib.body_model.prior import MaxMixturePrior
-            self.pose_prior = MaxMixturePrior(prior_folder=constants.GMM_WEIGHTS_DIR,
-                                              num_gaussians=8,
-                                              dtype=torch.float32).to(self.device)
-        elif args.prior == 'VPoser':
-            from lib.body_model.prior import VPoser, VPoser_new
-            support_dir = '/data3/ljz24/projects/3d/human_body_prior/support_data/dowloads'
-            self.pose_prior = VPoser(support_dir).to(self.device)
-            # config_path = 'subprior.configs.body.optim.set1.get_config'
-            # self.pose_prior = VPoser_new(config_path).to(self.device)
-        elif args.prior == 'Posendf':
-            from lib.body_model.prior import Posendf
-            config = '/data3/ljz24/projects/3d/PoseNDF/checkpoints/config.yaml'
-            ckpt = '/data3/ljz24/projects/3d/PoseNDF/checkpoints/checkpoint_v2.tar'
-            self.pose_prior = Posendf(config, ckpt).to(self.device)
         else:
             self.pose_prior = None
 

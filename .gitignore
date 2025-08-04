@@ -1,5 +1,5 @@
 # Specify filepatterns you want git to ignore.
-
+.history/
 .idea/
 __pycache__/
 output/

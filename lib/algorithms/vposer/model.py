@@ -125,7 +125,7 @@ class CVPoser(nn.Module):
         self.num_joints = n_poses
         n_features = self.num_joints * pose_dim
         # Encoder input（pose + condition）
-        expanded_input_size = n_features * 2  # 因为pose_body和condition被拼接
+        expanded_input_size = n_features * 2
 
         self.encoder_net = nn.Sequential(
             nn.BatchNorm1d(expanded_input_size),

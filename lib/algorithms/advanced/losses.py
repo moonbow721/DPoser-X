@@ -21,7 +21,7 @@ import torch
 import torch.optim as optim
 from torch import nn
 
-from lib.utils.misc import lerp, create_random_mask
+from lib.utils.misc import lerp, create_random_mask, create_random_part_mask, apply_random_part_mask
 
 from . import utils as mutils
 from .sde_lib import VESDE, VPSDE
@@ -64,7 +64,8 @@ def optimization_manager(config):
 
 def get_sde_loss_fn(sde, train, reduce_mean=False, continuous=True, likelihood_weighting=False, eps=1e-5,
                     return_data=False, denoise_steps=5,
-                    random_mask=False, min_mask_rate=0.2, max_mask_rate=0.4, observation_type='noise'):
+                    random_mask=False, min_mask_rate=0.2, max_mask_rate=0.4, observation_type='noise',
+                    random_part_mask=False, mask_prob=0.2, apply_loss=True):
     """Create a loss function for training with arbirary SDEs.
 
   Args:
@@ -89,7 +90,7 @@ def get_sde_loss_fn(sde, train, reduce_mean=False, continuous=True, likelihood_w
       model: A score model.
       batch: [B, j*3] or [B, j*6]
       condition: None
-      mask: None or same shape as condition
+      mask: None or same shape as batch (wholdbody: [B, 4], 0 for body, 1 for left_hand, 2 for right_hand, 3 for face)
     Returns:
       loss: A scalar that represents the average loss value across the mini-batch.
     """
@@ -115,11 +116,26 @@ def get_sde_loss_fn(sde, train, reduce_mean=False, continuous=True, likelihood_w
         t = torch.rand(batch.shape[0], device=batch.device) * (sde.T - eps) + eps  # [B]
         z = torch.randn_like(batch)  # [B, j*3]
 
-        if random_mask:
-        # apply random mask to batch
-            mask, batch = create_random_mask(batch, min_mask_rate, max_mask_rate, observation_type)
+        if mask is None:
+            if random_mask:  # apply random mask to batch (abanonded feature)
+                mask, batch = create_random_mask(batch, min_mask_rate, max_mask_rate, observation_type)
+                loss_mask = mask
+            elif random_part_mask:  # for wholebody training
+                mask, loss_mask = create_random_part_mask(batch.shape[0], batch.device, mask_prob, 3, apply_loss)
+            else:
+                loss_mask = torch.ones(batch.shape[0], 1, dtype=torch.bool, device=batch.device)
         else:
-            mask = torch.ones_like(batch)
+            assert mask.shape[1] == 4, "mask should be [B, 4] for wholebody training"
+            if random_part_mask:
+                mask, loss_mask = apply_random_part_mask(mask, mask_prob, rot_N=3, apply_loss=apply_loss)
+            else:
+                _, loss_mask = apply_random_part_mask(mask, mask_prob=0.0, rot_N=3,)
+                # rot_N = 3
+                # loss_indices = [list(range(21 * rot_N)), list(range(21 * rot_N, 36 * rot_N)),
+                #                 list(range(36 * rot_N, 51 * rot_N)), list(range(51 * rot_N, 52 * rot_N + 100))]
+                # loss_mask = torch.zeros(batch.shape[0], 52 * rot_N + 100, dtype=torch.bool)
+                # for idx in range(4):
+                #     loss_mask[:, loss_indices[idx]] = mask[:, idx].unsqueeze(1)
 
         mean, std = sde.marginal_prob(batch, t)
         perturbed_data = mean + std[:, None] * z  # [B, j*3]
@@ -133,13 +149,13 @@ def get_sde_loss_fn(sde, train, reduce_mean=False, continuous=True, likelihood_w
         else:
             score = score_fn(perturbed_data, t, condition, mask)
 
-        # Apply mask: * mask
+        # Apply mask: * loss_mask
         if not likelihood_weighting:
-            losses = torch.square(score * std[:, None] + z)  # [B, j*3]
+            losses = torch.square(score * std[:, None] + z) * loss_mask  # [B, j*3]
             losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1)  # [B]
         else:
             g2 = sde.sde(torch.zeros_like(batch), t)[1] ** 2
-            losses = torch.square(score + z / std[:, None])
+            losses = torch.square(score + z / std[:, None]) * loss_mask
             losses = reduce_op(losses.reshape(losses.shape[0], -1), dim=-1) * g2
 
         loss = torch.mean(losses)
@@ -199,7 +215,7 @@ def get_ddpm_loss_fn(vpsde, train, reduce_mean=True):
 
 
 def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True,
-                likelihood_weighting=False, auxiliary_loss=False, random_mask=False,
+                likelihood_weighting=False, auxiliary_loss=False,
                 denormalize=None, body_model=None, model_type='body', **kwargs):
     """Create a one-step training/evaluation function.
 
@@ -217,7 +233,7 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
     if continuous:
         loss_fn = get_sde_loss_fn(sde, train, reduce_mean=reduce_mean,
                                   continuous=True, likelihood_weighting=likelihood_weighting,
-                                  return_data=auxiliary_loss, random_mask=random_mask, **kwargs)
+                                  return_data=auxiliary_loss, **kwargs)
     else:
         assert not likelihood_weighting, "Likelihood weighting is not supported for original SMLD/DDPM training."
         if isinstance(sde, VESDE):
@@ -234,7 +250,8 @@ def get_step_fn(sde, train, optimize_fn=None, reduce_mean=False, continuous=True
         'body': 'body_pose',
         'hand': 'hand_pose',
         'face': 'face_params',
-        'whole-body': 'whole_body_params',
+        'face-betas': 'betas',
+        'whole-body': 'wholebody_params',
     }
     param = model_type_to_param.get(model_type)
     if param is None:

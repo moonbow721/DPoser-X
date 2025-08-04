@@ -205,6 +205,31 @@ class EulerMaruyamaPredictor(Predictor):
 
                 return y_t_hat, y_t_mean
 
+            elif self.inverse_solver == 'ABP':  # Adaptive BP from DSG
+                x.requires_grad_()
+                drift, diffusion, alpha, sigma_2, score = self.rsde.sde(x, t, condition, mask=None, guide=True)
+                y_t_mean = x.detach() + drift.detach() * dt
+                y_t_hat = y_t_mean + diffusion[:, None] * np.sqrt(-dt) * z
+
+                with torch.enable_grad():  # Enable gradients computation
+                    y_0_hat = (x + sigma_2[:, None] * score) / alpha
+                    norm = torch.norm((observation * mask) - (y_0_hat * mask))
+                    grad = torch.autograd.grad(outputs=norm, inputs=x)[0]
+                    if torch.isnan(grad).any():
+                        raise ValueError('Consider reduce the value of parameter: grad_step={}'.format(grad_step))
+                    grad_norm = torch.linalg.norm(grad, dim=[1])[:, None]
+                    b, c, = x.shape
+                    r = torch.sqrt(torch.tensor(c)) * (diffusion * np.sqrt(-dt))[0]
+                    guidance_rate, eps = 1.0, 1e-8
+
+                    d_star = -r * grad / (grad_norm + eps)
+                    d_sample = y_t_hat - y_t_mean
+                    mix_direction = d_sample + guidance_rate * (d_star - d_sample)
+                    mix_direction_norm = torch.linalg.norm(mix_direction, dim=[1])[:, None]
+                    mix_step = mix_direction / (mix_direction_norm + eps) * r
+
+                return y_t_mean+mix_step, y_t_mean
+
         drift, diffusion = self.rsde.sde(x, t, condition, mask)
         x_mean = x + drift * dt
         x = x_mean + diffusion[:, None] * np.sqrt(-dt) * z
@@ -405,7 +430,7 @@ def get_pc_sampler(sde, shape, predictor, corrector, inverse_scaler, snr,
     A sampling function that returns samples and the number of function evaluations during sampling.
   """
     # Create predictor & corrector update functions
-    assert inverse_solver in [None, 'BP'], f"Unknown inverse solver {inverse_solver}"
+    assert inverse_solver in [None, 'BP', 'ABP'], f"Unknown inverse solver {inverse_solver}"
     predictor_update_fn = functools.partial(shared_predictor_update_fn,
                                             sde=sde,
                                             predictor=predictor,

@@ -1,8 +1,8 @@
-import math
+import os
 import torch
 from torch.utils.data import Sampler
 import torch.distributed as dist
-
+from torch.utils.data import DataLoader
 
 class DistributedEvalSampler(Sampler):
     r"""
@@ -124,3 +124,33 @@ class DistributedEvalSampler(Sampler):
             epoch (int): _epoch number.
         """
         self.epoch = epoch
+
+
+def get_dataloader(dataset, num_replicas=1, rank=0, batch_size=10000):
+    sampler = DistributedEvalSampler(dataset,
+                                     num_replicas=num_replicas,
+                                     rank=rank,
+                                     shuffle=False)
+
+    dataloader = DataLoader(dataset,
+                            batch_size=batch_size,
+                            shuffle=False,
+                            num_workers=0,
+                            sampler=sampler,
+                            persistent_workers=False,
+                            pin_memory=True,
+                            drop_last=True)
+
+    return dataloader
+
+
+def setup(rank, world_size, port=None):
+    os.environ['MASTER_ADDR'] = '127.0.0.1'
+    os.environ['MASTER_PORT'] = str(port)
+
+    # initialize the process group
+    dist.init_process_group("gloo", rank=rank, world_size=world_size)
+
+
+def cleanup():
+    dist.destroy_process_group()

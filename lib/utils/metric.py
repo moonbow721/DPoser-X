@@ -4,6 +4,7 @@ import numpy as np
 import pymeshlab as pyml
 import torch
 from scipy import linalg
+import faiss
 
 from lib.utils.transforms import axis_angle_to_quaternion
 from lib.prdc import compute_prdc_torch
@@ -112,8 +113,17 @@ def evaluate_prdc(pose_batch, reference_batch, nearest_k=3):
     return results_dict
 
 
+
+def evaluate_dnn(pose_batch, dataset_tensor, reduce='mean', measure='rotation',
+                 batch_size=100000, faiss_index_path=None, device_id=-1):
+    if faiss_index_path is None:
+        return evaluate_dnn_torch(pose_batch, dataset_tensor, reduce=reduce, measure=measure, batch_size=batch_size)
+    else:
+        return evaluate_dnn_faiss(pose_batch, dataset_tensor, faiss_index_path, reduce=reduce, measure=measure, device_id=device_id)
+
+
 @torch.no_grad()
-def evaluate_dnn(pose_batch, dataset_tensor, reduce='mean', batch_size=100000, measure='rotation'):
+def evaluate_dnn_torch(pose_batch, dataset_tensor, reduce='mean', batch_size=100000, measure='rotation'):
     """
     Measure the distance between the generated pose and its nearest neighbor from the training data,
     processing the dataset in mini-batches to conserve memory.
@@ -131,25 +141,28 @@ def evaluate_dnn(pose_batch, dataset_tensor, reduce='mean', batch_size=100000, m
     """
     # Load the dataset tensor if a path is provided
     if isinstance(dataset_tensor, str):
-        dataset_tensor = torch.load(dataset_tensor).to(pose_batch.device)
-    assert pose_batch.size(1) == dataset_tensor.size(1), "Pose dimension mismatch."
+        dataset_tensor = torch.load(dataset_tensor)
+
     # Initialize a tensor to hold the minimum distances found so far
     min_distances = torch.full((pose_batch.size(0),), float('inf'), device=pose_batch.device)
 
-    # Flatten pose_batch and dataset_tensor for easier processing if measure is 'absolute'
     if measure == 'rotation':
         pose_batch = axis_angle_to_quaternion(pose_batch.reshape(pose_batch.size(0), -1, 3))
+        if len(dataset_tensor.size()) == 2:
+            dataset_tensor = dataset_tensor.reshape(dataset_tensor.size(0), -1, 4)
+
+    assert pose_batch.size(1) == dataset_tensor.size(1), "Pose dimension mismatch."
+    print(f"pose_batch: {pose_batch.size()}, dataset_tensor: {dataset_tensor.size()}")
 
     # Process the dataset_tensor in mini-batches
     for start_idx in range(0, dataset_tensor.size(0), batch_size):
         end_idx = min(start_idx + batch_size, dataset_tensor.size(0))
-        batch = dataset_tensor[start_idx:end_idx]
+        batch = dataset_tensor[start_idx:end_idx].to(pose_batch.device)
 
         if measure == 'absolute':
             distances = torch.cdist(pose_batch[None], batch[None], p=2)[0]
         elif measure == 'rotation':
             # Calculate rotational distances for each joint separately and sum them up
-            batch = axis_angle_to_quaternion(batch.reshape(batch.size(0), -1, 3))
             distances = torch.zeros(pose_batch.size(0), batch.size(0), device=pose_batch.device)
             for j in range(pose_batch.size(1)):
                 joint_distances = quaternion_angular_distance(pose_batch[:, j, :], batch[:, j, :])
@@ -170,7 +183,70 @@ def evaluate_dnn(pose_batch, dataset_tensor, reduce='mean', batch_size=100000, m
     return dnn
 
 
-def quaternion_angular_distance(q1, q2, eps=1e-12, check_unit=True):
+@torch.no_grad()
+def evaluate_dnn_faiss(pose_batch, dataset_tensor_or_path, faiss_index_path,
+                       reduce='mean', measure='rotation', device_id=-1):
+    """
+    Measure the distance between the generated pose and its nearest neighbor from the training data,
+    using FAISS for faster search.
+
+    Args:
+        pose_batch: A tensor of shape (batch_size, pose_dim), axis-angle representation
+        dataset_tensor_or_path: A tensor of shape (num_samples, pose_dim) containing the training data
+            Or a path to the .pt file containing the dataset
+        faiss_index_path: Path to the pre-built FAISS index file
+        reduce: The reduction operation to apply to the distances ('mean', 'none')
+        measure (str): The distance measure to use ('absolute' or 'rotation'). Default: 'rotation'
+
+    Returns:
+        dnn: The distance to the nearest neighbor for each pose in the batch (reduced if specified)
+    """
+    if isinstance(dataset_tensor_or_path, str):
+        dataset_tensor = torch.load(dataset_tensor_or_path)
+    else:
+        dataset_tensor = dataset_tensor_or_path
+    sample_num = pose_batch.size(0)
+
+    if measure == 'rotation':
+        assert dataset_tensor.size(1) % 4 == 0, "Dataset requires 4D quaternion."
+        assert 'quaternion' in faiss_index_path, 'Rotation measure requires quaternion poses.'
+        pose_batch = axis_angle_to_quaternion(pose_batch.reshape(sample_num, -1, 3)).reshape(sample_num, -1)
+
+    assert pose_batch.size(1) == dataset_tensor.size(1), "Pose dimension mismatch."
+    print(f"pose_batch: {pose_batch.size()}, dataset_tensor: {dataset_tensor.size()}")
+
+    index = faiss.read_index(faiss_index_path)
+    if device_id >= 0:
+        res = faiss.StandardGpuResources()
+        index = faiss.index_cpu_to_gpu(res, device_id, index)
+
+    _, indices = index.search(pose_batch.cpu().numpy(), 1)
+    nearest_neighbors = dataset_tensor[indices.flatten()].to(pose_batch.device)
+
+    if measure == 'absolute':
+        distances = torch.norm(pose_batch - nearest_neighbors, dim=-1)
+    elif measure == 'rotation':
+        # Calculate rotational distances for each joint separately and sum them up
+        distances = torch.zeros(sample_num, device=pose_batch.device)
+        pose_batch = pose_batch.reshape(sample_num, -1, 4)
+        nearest_neighbors = nearest_neighbors.reshape(sample_num, -1, 4)
+        for j in range(pose_batch.size(1)):
+            joint_distances = quaternion_angular_distance(pose_batch[:, j, :], nearest_neighbors[:, j, :], one_to_one=True)
+            distances += joint_distances
+    else:
+        raise ValueError("Invalid distance measure. Use 'absolute' or 'rotation'.")
+
+    if reduce == 'mean':
+        dnn = torch.mean(distances)
+    elif reduce == 'none':
+        dnn = distances
+    else:
+        raise ValueError("Invalid reduction operation. Use 'mean' or 'none'.")
+
+    return dnn
+
+
+def quaternion_angular_distance(q1, q2, eps=1e-12, check_unit=True, one_to_one=False):
     """
     Compute the angular distances between two batches of quaternions.
     Args:
@@ -178,16 +254,23 @@ def quaternion_angular_distance(q1, q2, eps=1e-12, check_unit=True):
         q2 (Tensor): Another batch of quaternions with shape [M, 4], where M is the number of quaternions.
         eps (float): A small value to avoid numerical issues when clamping the dot product.
         check_unit (bool): Whether to check if the quaternions are unit quaternions before computing the distances.
+        one_to_one (bool): Whether to compute the angular distances between one-to-one pairs of quaternions.
     Returns:
-        Tensor: A matrix of angular distances with shape [N, M].
+        Tensor: A matrix of angular distances with shape [N, M] or [N] (N=M).
     """
+    if one_to_one:
+        assert q1.shape == q2.shape, "Input tensors must have the same shape"
+
     # Normalize quaternions to ensure they are unit quaternions
     if check_unit:
         q1 = q1 / torch.norm(q1, dim=-1, keepdim=True)
         q2 = q2 / torch.norm(q2, dim=-1, keepdim=True)
 
     # Compute dot products between all combinations of quaternions from q1 and q2
-    dot_product = torch.mm(q1, q2.transpose(0, 1))  # Resulting shape is [N, M]
+    if one_to_one:
+        dot_product = torch.sum(q1 * q2, dim=-1)  # Resulting shape is [N]
+    else:
+        dot_product = torch.mm(q1, q2.transpose(0, 1))  # Resulting shape is [N, M]
 
     # Clamp dot product values to avoid numerical issues outside arccos range
     dot_product = torch.clamp(dot_product, -1.0+eps, 1.0-eps)
@@ -259,17 +342,21 @@ def calculate_frechet_distance(mu1, sigma1, mu2, sigma2, eps=1e-6):
     return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
 
 
-def average_pairwise_distance(joints3d):
+@torch.no_grad()
+def average_pairwise_distance(joints3d, relative_root=False):
     """
     Calculate Average Pairwise Distance (APD) for a batch of poses.
 
     Parameters:
     - joints3d (torch.Tensor): A tensor of shape (batch_size, num_joints, 3)
+    - relative_root (bool): If True, the root joint is subtracted from all joints before calculating APD.
 
     Returns:
     - APD (torch.Tensor): Average Pairwise Distance (unit: meter)
     """
     batch_size, num_joints, _ = joints3d.shape
+    if relative_root:
+        joints3d = joints3d - joints3d[:, 0:1, :]
 
     # Initialize tensor to store pairwise distances between samples in the batch
     pairwise_distances = torch.zeros(batch_size, batch_size)
@@ -277,7 +364,7 @@ def average_pairwise_distance(joints3d):
     for i in range(batch_size):
         for j in range(i + 1, batch_size):
             # Calculate the pairwise distance between sample i and sample j
-            dist = torch.mean(torch.norm(joints3d[i, :, :] - joints3d[j, :, :], dim=1))
+            dist = torch.mean(torch.norm(joints3d[i, :, :] - joints3d[j, :, :], dim=-1))
             pairwise_distances[i, j] = dist
             pairwise_distances[j, i] = dist  # Distance is symmetric
 
@@ -287,6 +374,21 @@ def average_pairwise_distance(joints3d):
     # Calculate the mean over all the pairwise distances in the batch to get APD
     APD = torch.sum(pairwise_distances) / (batch_size * (batch_size - 1))
 
+    return APD
+
+
+def average_pairwise_distance_wholebody(joints3d):  # hands not used (haven't considered hands root rotation)
+    batch_size, num_joints, _ = joints3d.shape
+    assert num_joints in [127, 144], "Invalid number of joints for wholebody smplx joints."
+    body_mapping = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+    lhand_mapping = [20, 37, 38, 39, 66, 25, 26, 27, 67, 28, 29, 30, 68, 34, 35, 36, 69, 31, 32, 33, 70]
+    rhand_mapping = [21, 52, 53, 54, 71, 40, 41, 42, 72, 43, 44, 45, 73, 49, 50, 51, 74, 46, 47, 48, 75]
+    APD_modes = {'body': body_mapping, 'lhand': lhand_mapping, 'rhand': rhand_mapping}
+    APD = {}
+    for mode, mapping in APD_modes.items():
+        relative_root = False if mode == 'body' else True
+        APD[mode] = average_pairwise_distance(joints3d[:, mapping, :], relative_root)
+    APD['hands'] = (APD['lhand'] + APD['rhand']) / 2
     return APD
 
 

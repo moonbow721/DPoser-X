@@ -2,6 +2,7 @@ import argparse
 import os
 
 import numpy as np
+import torch
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
@@ -24,6 +25,7 @@ class AMASSDataModule(pl.LightningDataModule):
                                               version=self.args.version,
                                               subset='train',
                                               sample_interval=self.args.sample,)
+            self.sample_weights = torch.ones(len(self.train_dataset))
 
             self.val_dataset = AMASSDataset(root_path=self.args.data_root,
                                             version=self.args.version,

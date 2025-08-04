@@ -72,13 +72,14 @@ def find_npz_files(data_dir):
 
 
 def load_pl_weights(model, pl_weights, model_key='model'):
-    state_dict = {k.replace(f"{model_key}.", ""): v for k, v in
-                  pl_weights.items() if k.startswith(f"{model_key}.")}
+    prefix = f"{model_key}."
+    prefix_len = len(prefix)
+    state_dict = {k[prefix_len:]: v for k, v in pl_weights.items() if k.startswith(prefix)}
     model.load_state_dict(state_dict)
 
 
 def load_model(model, config, ckpt_path, device, is_ema=True):
-    ema = ExponentialMovingAverage(model.parameters(), decay=config.model.ema_rate)
+    ema = ExponentialMovingAverage(model.parameters(), decay=config.ema_rate)
     # restore checkpoint
     if ckpt_path.endswith('.ckpt'):
         checkpoint = torch.load(ckpt_path, map_location=device)
@@ -93,3 +94,8 @@ def load_model(model, config, ckpt_path, device, is_ema=True):
 
     if is_ema:
         ema.copy_to(model.parameters())
+
+
+def print_gpu_memory():
+    print("Allocated:", torch.cuda.memory_allocated() / 1_073_741_824, "GB")  # Converts bytes to GB
+    print("Cached:   ", torch.cuda.memory_reserved() / 1_073_741_824, "GB")

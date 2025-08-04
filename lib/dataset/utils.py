@@ -94,8 +94,8 @@ class CombinedNormalizer:
         self.POSE_DIM = 3 if rot_rep == 'axis' else 6
         self.device = device
 
-        # TODO: add global orient for body pose
-        self.supported_keys = ['body_pose', 'left_hand_pose', 'right_hand_pose', 'jaw_pose', 'expression']
+        # TODO: add global orient for body pose in the future
+        self.supported_keys = ['body_pose', 'left_hand_pose', 'right_hand_pose', 'jaw_pose', 'expression', 'betas']
         assert all(
             [k in self.supported_keys for k in data_path_dict.keys()]), f'unexpected keys {data_path_dict.keys()}'
         self.normalizers = {k: Posenormalizer(v, device, normalize, min_max, rot_rep) for k, v in data_path_dict.items()}
@@ -104,12 +104,24 @@ class CombinedNormalizer:
         # Define model configurations
         self.model_configurations = {
             'face': [('jaw_pose', 1 * self.POSE_DIM), ('expression', 100)],
+            'full-face': [('jaw_pose', 1 * self.POSE_DIM), ('expression', 100), ('betas', 100)],
+            'two-hand': [('left_hand_pose', 15 * self.POSE_DIM), ('right_hand_pose', 15 * self.POSE_DIM)],
             'whole-body': [('body_pose', 21 * self.POSE_DIM), ('left_hand_pose', 15 * self.POSE_DIM),
                            ('right_hand_pose', 15 * self.POSE_DIM), ('jaw_pose', 1 * self.POSE_DIM), ('expression', 100)]
         }
+        assert model in self.model_configurations.keys(), f'unsupported model {model}'
 
         self.model = model
         self.used_keys = [key for key, _ in self.model_configurations[model]]
+
+    def flip_left_hand_pose(self, poses):
+        assert poses.shape[-1] == 45, f'expected axis-angle rep 45(15x3), got {poses.shape[-1]}'
+        assert len(poses.shape) == 2 or len(poses.shape) == 3  # [b, data_dim] or [t, b, data_dim]
+        fliped_poses = poses.clone()
+        fliped_poses[..., 1::3] *= -1
+        fliped_poses[..., 2::3] *= -1
+
+        return fliped_poses
 
     def _slice_and_process(self, poses, process_function, from_to_axis=False):
         last_dim = poses.dim() - 1
@@ -126,6 +138,8 @@ class CombinedNormalizer:
         if isinstance(poses, dict):
             return {k: self.offline_normalize(v, from_axis, k) for k, v in poses.items()}
         elif data_key is not None:
+            if data_key == 'left_hand_pose':
+                poses = self.flip_left_hand_pose(poses)
             return self.normalizers[data_key].offline_normalize(poses, from_axis)
         else:
             return self._slice_and_process(poses, self.offline_normalize, from_axis)
@@ -134,17 +148,19 @@ class CombinedNormalizer:
         if isinstance(poses, dict):
             return {k: self.normalizers[k].offline_denormalize(v, to_axis) for k, v in poses.items()}
         elif data_key is not None:
-            return self.normalizers[data_key].offline_denormalize(poses, to_axis)
+            poses = self.normalizers[data_key].offline_denormalize(poses, to_axis)
+            if data_key == 'left_hand_pose':
+                poses = self.flip_left_hand_pose(poses)
+            return poses
         else:
             return self._slice_and_process(poses, self.offline_denormalize, to_axis)
 
 
 def calculate_normalize_params(dataset, data_key='', rot_rep='axis', min_max=False,
-                               batch_size=12800, num_workers=16,
-                               output_dir='', split_num=1):
+                               batch_size=12800, num_workers=16, output_dir='', split_num=1):
     torch.multiprocessing.set_sharing_strategy('file_system')
     os.makedirs(output_dir, exist_ok=True)
-    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=False)
 
     all_data = []
 
@@ -189,5 +205,3 @@ def calculate_normalize_params(dataset, data_key='', rot_rep='axis', min_max=Fal
     torch.cuda.empty_cache()
 
     print(f'normalize params saved to {output_dir}')
-
-

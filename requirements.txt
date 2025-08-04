@@ -1,6 +1,7 @@
 numpy
 scipy
 scikit-learn
+scikit-image
 smplx==0.1.28
 tqdm
 yacs
@@ -16,5 +17,5 @@ pyglet
 pymeshlab
 pyrender
 trimesh
-pytorch-lightning
 pytorch3d
+faiss-gpu

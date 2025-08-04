@@ -40,15 +40,12 @@ def parse_args(argv):
     parser = argparse_flags.ArgumentParser(description='visualize the save files and demo on toy data')
 
     parser.add_argument('--ckpt-path', type=str,
-                        default='./pretrained_models/amass/BaseMLP/epoch=36-step=150000-val_mpjpe=38.17.ckpt',
-                        help='load trained diffusion model for DPoser')
+                        default='./pretrained_models/body/BaseMLP/last.ckpt',
+                        help='load trained diffusion model')
     parser.add_argument('--bodymodel-path', type=str,
                         default='../body_models/smplx/SMPLX_NEUTRAL.npz',
                         help='load SMPLX')
-    parser.add_argument('--dataset-folder', type=str,
-                        default='../data/human/Bodydataset/amass_processed',
-                        help='the folder includes necessary normalizing parameters')
-    parser.add_argument('--version', type=str, default='version1', help='dataset version')
+    parser.add_argument('--data-dir', type=str, default='./data/body_data',)
     parser.add_argument('--sample', type=int, default=1, help='reduce test samples')
 
     parser.add_argument('--outpath-folder', type=str, default='./output/body/test_results/partial_motion_denoise')
@@ -82,8 +79,7 @@ class MotionDenoise(object):
         self.betas = torch.zeros((batch_size, 10), device=self.device)
         self.poses = torch.randn((batch_size, 63), device=self.device) * 0.01 if pose_init is None else pose_init
         self.Normalizer = Posenormalizer(
-            data_path=f'{args.dataset_folder}/{args.version}/train',
-            normalize=config.data.normalize,
+            data_path=os.path.join(args.data_path, 'body_normalizer'),
             min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=args.device)
 
         if config.training.sde.lower() == 'vpsde':
@@ -372,7 +368,7 @@ def main(args):
     model = create_model(config.model, N_POSES, POSE_DIM, )
     model.to(args.device)
     model.eval()
-    load_model(model, config, args.ckpt_path, args.device, is_ema=True)
+    load_model(model, config.model, args.ckpt_path, args.device, is_ema=True)
 
     if args.file_path is not None:
         os.makedirs(args.outpath_folder, exist_ok=True)

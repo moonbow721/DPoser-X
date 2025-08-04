@@ -14,7 +14,7 @@ import pyrender
 import trimesh
 
 from lib.body_model.utils import get_smpl_skeleton, get_openpose_skeleton, get_openpose_hand_skeleton, \
-    get_openpose_face_skeleton, merge_skeleton
+    get_openpose_face_skeleton, get_mano_skeleton, merge_skeleton
 from lib.utils.transforms import get_rotation_matrix_x, rotate_points
 
 
@@ -24,6 +24,8 @@ def vis_keypoints_with_skeleton(img, kps, kps_lines=None, kp_thresh=0.4, alpha=0
             kps_lines = get_openpose_skeleton()
         elif kps.shape[0] == 22:
             kps_lines = get_smpl_skeleton()
+        elif kps.shape[0] == 16:
+            kps_lines = get_mano_skeleton()
         elif kps.shape[0] == 21:
             kps_lines = get_openpose_hand_skeleton()
         elif kps.shape[0] == 68:
@@ -32,7 +34,7 @@ def vis_keypoints_with_skeleton(img, kps, kps_lines=None, kp_thresh=0.4, alpha=0
             kps_lines = merge_skeleton([get_openpose_skeleton(), get_openpose_hand_skeleton(),
                                         get_openpose_hand_skeleton(), get_openpose_face_skeleton()])
         else:
-            raise NotImplementedError
+            raise NotImplementedError("The number of keypoints [{}] is not supported!".format(kps.shape[0]))
 
     cmap = plt.get_cmap('rainbow')
     colors = [cmap(i) for i in np.linspace(0, 1, len(kps_lines) + 2)]
@@ -41,26 +43,41 @@ def vis_keypoints_with_skeleton(img, kps, kps_lines=None, kp_thresh=0.4, alpha=0
     # Perform the drawing on a copy of the image, to allow for blending.
     kp_mask = np.copy(img)
 
+    # # Draw the keypoints.
+    # for l in range(len(kps_lines)):
+    #     i1, i2 = kps_lines[l]
+    #     p1 = (kps[i1, 0].astype(np.int32), kps[i1, 1].astype(np.int32))
+    #     p2 = (kps[i2, 0].astype(np.int32), kps[i2, 1].astype(np.int32))
+    #     # Assuming that the keypoints' confidence scores are in the third column,
+    #     # which is not provided in the code snippet. You would need to adapt this
+    #     # if your data structure is different.
+    #     if kps[i1, 2] > kp_thresh and kps[i2, 2] > kp_thresh:
+    #         cv2.line(kp_mask, p1, p2, color=colors[l], thickness=radius//2, lineType=cv2.LINE_AA)
+    #     if kps[i1, 2] > kp_thresh:
+    #         cv2.circle(kp_mask, p1, radius=radius, color=colors[l], thickness=-1, lineType=cv2.LINE_AA)
+    #     if kps[i2, 2] > kp_thresh:
+    #         cv2.circle(kp_mask, p2, radius=radius, color=colors[l], thickness=-1, lineType=cv2.LINE_AA)
+
     # Draw the keypoints.
     for l in range(len(kps_lines)):
         i1, i2 = kps_lines[l]
         p1 = (kps[i1, 0].astype(np.int32), kps[i1, 1].astype(np.int32))
         p2 = (kps[i2, 0].astype(np.int32), kps[i2, 1].astype(np.int32))
-        # Assuming that the keypoints' confidence scores are in the third column,
-        # which is not provided in the code snippet. You would need to adapt this
-        # if your data structure is different.
-        if kps[i1, 2] > kp_thresh and kps[i2, 2] > kp_thresh:
-            cv2.line(kp_mask, p1, p2, color=colors[l], thickness=radius//2, lineType=cv2.LINE_AA)
-        if kps[i1, 2] > kp_thresh:
-            cv2.circle(kp_mask, p1, radius=radius, color=colors[l], thickness=-1, lineType=cv2.LINE_AA)
-        if kps[i2, 2] > kp_thresh:
-            cv2.circle(kp_mask, p2, radius=radius, color=colors[l], thickness=-1, lineType=cv2.LINE_AA)
+
+        # Determine the color based on confidence scores
+        line_color = colors[l] if kps[i1, 2] > kp_thresh and kps[i2, 2] > kp_thresh else (128, 128, 128)  # Gray
+        color1 = colors[l] if kps[i1, 2] > kp_thresh else (128, 128, 128)  # Gray
+        color2 = colors[l] if kps[i2, 2] > kp_thresh else (128, 128, 128)  # Gray
+
+        cv2.line(kp_mask, p1, p2, color=line_color, thickness=radius//2, lineType=cv2.LINE_AA)
+        cv2.circle(kp_mask, p1, radius=radius, color=color1, thickness=-1, lineType=cv2.LINE_AA)
+        cv2.circle(kp_mask, p2, radius=radius, color=color2, thickness=-1, lineType=cv2.LINE_AA)
 
     # Blend the keypoints.
     return cv2.addWeighted(img, 1.0 - alpha, kp_mask, alpha, 0)
 
 
-def visualize_3d_skeleton(kpt_3d, kpt_3d_vis, kps_lines, title=None, output_path=None, ax_lims=None):
+def visualize_3d_keypoints(kpt_3d, kpt_3d_vis, title=None, output_path=None, ax_lims=None):
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
 
@@ -72,26 +89,16 @@ def visualize_3d_skeleton(kpt_3d, kpt_3d_vis, kps_lines, title=None, output_path
         scale = np.max([ax_lims[1] - ax_lims[0], ax_lims[3] - ax_lims[2], ax_lims[5] - ax_lims[4]])
         ax.set_box_aspect([scale, scale, scale])
 
-    ax.view_init(0, -90)  # Elevation, Azimuthal angles
+    # ax.view_init(0, -90)  # Elevation, Azimuthal angles
 
     # Convert from plt 0-1 RGBA colors to 0-255 BGR colors for opencv.
     cmap = plt.get_cmap('rainbow')
-    colors = [cmap(i) for i in np.linspace(0, 1, len(kps_lines) + 2)]
+    colors = [cmap(i) for i in np.linspace(0, 1, kpt_3d.shape[0])]
     colors = [np.array((c[2], c[1], c[0])) for c in colors]
 
-    for l in range(len(kps_lines)):
-        i1 = kps_lines[l][0]
-        i2 = kps_lines[l][1]
-        x = np.array([kpt_3d[i1, 0], kpt_3d[i2, 0]])
-        y = np.array([kpt_3d[i1, 1], kpt_3d[i2, 1]])
-        z = np.array([kpt_3d[i1, 2], kpt_3d[i2, 2]])
-
-        if kpt_3d_vis[i1, 0] > 0 and kpt_3d_vis[i2, 0] > 0:
-            ax.plot(x, z, -y, c=colors[l], linewidth=2)
-        if kpt_3d_vis[i1, 0] > 0:
-            ax.scatter(kpt_3d[i1, 0], kpt_3d[i1, 2], -kpt_3d[i1, 1], color=colors[l], marker='o')
-        if kpt_3d_vis[i2, 0] > 0:
-            ax.scatter(kpt_3d[i2, 0], kpt_3d[i2, 2], -kpt_3d[i2, 1], color=colors[l], marker='o')
+    for i in range(kpt_3d.shape[0]):
+        if kpt_3d_vis[i, 0] > 0:
+            ax.scatter(kpt_3d[i, 0], kpt_3d[i, 1], kpt_3d[i, 2], color=colors[i], marker='o')
 
     if title is not None:
         ax.set_title(title)
@@ -109,7 +116,74 @@ def visualize_3d_skeleton(kpt_3d, kpt_3d_vis, kps_lines, title=None, output_path
     plt.close(fig)  # Close the figure to free up memory
 
 
-def visualize_skeleton_sequence(joints_seq, kpt_3d_vis, kps_lines, output_path):
+def visualize_3d_skeleton(kpt_3d, kpt_3d_vis, kps_lines, title=None, output_path=None, ax_lims=None, same_color=False):
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+
+    if ax_lims:
+        ax.set_xlim(ax_lims[0], ax_lims[1])
+        ax.set_ylim(ax_lims[2], ax_lims[3])
+        ax.set_zlim(ax_lims[4], ax_lims[5])
+        # Set the same scale and view for all axes
+        scale = np.max([ax_lims[1] - ax_lims[0], ax_lims[3] - ax_lims[2], ax_lims[5] - ax_lims[4]])
+        ax.set_box_aspect([scale, scale, scale])
+
+    ax.view_init(0, -90)  # Elevation, Azimuthal angles
+
+    if same_color:
+        blue = (0, 0, 1)
+        gray = (0.5, 0.5, 0.5)
+    else:
+        cmap = plt.get_cmap('rainbow')
+        colors = [cmap(i) for i in np.linspace(0, 1, len(kps_lines) + 2)]
+        colors = [np.array((c[2], c[1], c[0])) for c in colors]
+
+    for l in range(len(kps_lines)):
+        i1 = kps_lines[l][0]
+        i2 = kps_lines[l][1]
+        x = np.array([kpt_3d[i1, 0], kpt_3d[i2, 0]])
+        y = np.array([kpt_3d[i1, 1], kpt_3d[i2, 1]])
+        z = np.array([kpt_3d[i1, 2], kpt_3d[i2, 2]])
+
+        if same_color:
+            if kpt_3d_vis[i1, 0] > 0 and kpt_3d_vis[i2, 0] > 0:
+                line_color = blue
+            else:
+                line_color = gray
+            ax.plot(x, z, -y, c=line_color, linewidth=2)
+            if kpt_3d_vis[i1, 0] > 0:
+                ax.scatter(kpt_3d[i1, 0], kpt_3d[i1, 2], -kpt_3d[i1, 1], color=blue, marker='o')
+            else:
+                ax.scatter(kpt_3d[i1, 0], kpt_3d[i1, 2], -kpt_3d[i1, 1], color=gray, marker='o')
+            if kpt_3d_vis[i2, 0] > 0:
+                ax.scatter(kpt_3d[i2, 0], kpt_3d[i2, 2], -kpt_3d[i2, 1], color=blue, marker='o')
+            else:
+                ax.scatter(kpt_3d[i2, 0], kpt_3d[i2, 2], -kpt_3d[i2, 1], color=gray, marker='o')
+        else:
+            if kpt_3d_vis[i1, 0] > 0 and kpt_3d_vis[i2, 0] > 0:
+                ax.plot(x, z, -y, c=colors[l], linewidth=2)
+            if kpt_3d_vis[i1, 0] > 0:
+                ax.scatter(kpt_3d[i1, 0], kpt_3d[i1, 2], -kpt_3d[i1, 1], color=colors[l], marker='o')
+            if kpt_3d_vis[i2, 0] > 0:
+                ax.scatter(kpt_3d[i2, 0], kpt_3d[i2, 2], -kpt_3d[i2, 1], color=colors[l], marker='o')
+
+    if title is not None:
+        ax.set_title(title)
+
+    # Remove all axes, grid and background
+    ax.axis('off')
+    ax.grid(False)
+
+    plt.tight_layout()
+    if output_path:
+        plt.savefig(output_path)
+    else:
+        plt.show()
+
+    plt.close(fig)  # Close the figure to free up memory
+
+
+def visualize_skeleton_sequence(joints_seq, kpt_3d_vis, kps_lines, output_path, same_axis=True, same_color=False):
     num_frames = joints_seq.shape[0]
     joint_min = np.min(joints_seq.reshape(-1, 3), axis=0)
     joint_max = np.max(joints_seq.reshape(-1, 3), axis=0)
@@ -126,7 +200,7 @@ def visualize_skeleton_sequence(joints_seq, kpt_3d_vis, kps_lines, output_path):
         center_x - padding_ratio * range_x / 2, center_x + padding_ratio * range_x / 2,
         center_y - padding_ratio * range_y / 2, center_y + padding_ratio * range_y / 2,
         center_z - padding_ratio * range_z / 2 - 0.5, center_z + padding_ratio * range_z / 2 - 0.5
-    ]
+    ] if same_axis else None
 
     if output_path.endswith('.mp4'):
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -134,7 +208,8 @@ def visualize_skeleton_sequence(joints_seq, kpt_3d_vis, kps_lines, output_path):
 
         for i in range(num_frames):
             img_path = f'temp_frame_{i:04d}.png'
-            visualize_3d_skeleton(joints_seq[i], kpt_3d_vis, kps_lines, output_path=img_path, ax_lims=ax_lims)
+            visualize_3d_skeleton(joints_seq[i], kpt_3d_vis, kps_lines,
+                                  output_path=img_path, ax_lims=ax_lims, same_color=same_color)
             frame = cv2.imread(img_path)
             out.write(frame)
             os.remove(img_path)
@@ -144,24 +219,26 @@ def visualize_skeleton_sequence(joints_seq, kpt_3d_vis, kps_lines, output_path):
         os.makedirs(output_path, exist_ok=True)
         for i in range(num_frames):
             img_path = os.path.join(output_path, f'frame_{i:04d}.png')
-            visualize_3d_skeleton(joints_seq[i], kpt_3d_vis, kps_lines, output_path=img_path, ax_lims=ax_lims)
+            visualize_3d_skeleton(joints_seq[i], kpt_3d_vis, kps_lines,
+                                  output_path=img_path, ax_lims=ax_lims, same_color=same_color)
     else:
         raise ValueError("The output_path must end with .mp4 or no extension!")
 
 
-def vis_skeletons(joints_3d, kpt_3d_vis, kps_lines, output_path):
+def vis_skeletons(joints_3d, kpt_3d_vis, kps_lines, output_path, same_axis=True, same_color=False):
     rotation_angle_x = np.pi  # 180 degrees rotation around X-axis
     rotation_matrix_x = get_rotation_matrix_x(rotation_angle_x)
     joints_3d = rotate_points(joints_3d, rotation_matrix_x)
 
     # Check the dimensions of the joints_data
     if len(joints_3d.shape) == 2 or len(joints_3d.shape) == 3 and joints_3d.shape[0] == 1:
-        visualize_3d_skeleton(joints_3d, kpt_3d_vis, kps_lines, output_path=output_path)
+        visualize_3d_skeleton(joints_3d, kpt_3d_vis, kps_lines, output_path=output_path, same_color=same_color,)
     elif len(joints_3d.shape) == 3:
-        visualize_skeleton_sequence(joints_3d, kpt_3d_vis, kps_lines, output_path)
+        visualize_skeleton_sequence(joints_3d, kpt_3d_vis, kps_lines, output_path, same_axis, same_color)
 
 
 vis_body_skeletons = partial(vis_skeletons, kpt_3d_vis=np.ones((22, 1)), kps_lines=get_smpl_skeleton())
+vis_Ophand_skeletons = partial(vis_skeletons, kps_lines=get_openpose_hand_skeleton(), same_axis=False, same_color=True)
 
 
 def save_obj(v, f, file_name='output.obj'):
@@ -174,13 +251,17 @@ def save_obj(v, f, file_name='output.obj'):
     obj_file.close()
 
 
-def render_mesh(img, mesh, face, cam_param, view='random', distance=7.0):
+def render_mesh(img, mesh, face, cam_param, view='random', distance=7.0, markers=None):
     # mesh
     mesh = trimesh.Trimesh(mesh, face)
 
     centroid = np.mean(mesh.vertices, axis=0)
     translation_to_origin = trimesh.transformations.translation_matrix(-centroid)
     mesh.apply_transform(translation_to_origin)
+
+    opacity = 0.7 if markers is not None else 1.0
+    if markers is not None:
+        markers = markers - centroid  # Apply translation to origin
 
     if view == 'random':
         options_side = ['half', '']
@@ -210,6 +291,9 @@ def render_mesh(img, mesh, face, cam_param, view='random', distance=7.0):
     rotation = trimesh.transformations.rotation_matrix(angle, axis)
     mesh.apply_transform(rotation)
 
+    if markers is not None:
+        markers = trimesh.transformations.transform_points(markers, rotation)  # Apply rotation
+
     if 'above' in view:
         angle = np.radians(30)
     elif 'bottom' in view:
@@ -220,17 +304,39 @@ def render_mesh(img, mesh, face, cam_param, view='random', distance=7.0):
     rotation = trimesh.transformations.rotation_matrix(angle, axis)
     mesh.apply_transform(rotation)
 
+    if markers is not None:
+        markers = trimesh.transformations.transform_points(markers, rotation)  # Apply rotation
+
     translation_to_centroid = trimesh.transformations.translation_matrix(centroid)
     mesh.apply_transform(translation_to_centroid)
 
+    if markers is not None:
+        markers = markers + centroid  # Apply translation back
+
     mesh.vertices[:, 2] -= distance
-    material = pyrender.MetallicRoughnessMaterial(metallicFactor=0.0, alphaMode='OPAQUE',
+
+    if markers is not None:
+        markers[:, 2] -= distance  # Apply distance
+
+    material = pyrender.MetallicRoughnessMaterial(metallicFactor=0.0, alphaMode='BLEND',
                                                   # baseColorFactor=(1.0, 1.0, 0.9, 1.0),
-                                                  baseColorFactor=(0.93, 0.6, 0.4, 1.0),
+                                                  baseColorFactor=(0.93, 0.6, 0.4, opacity),
                                                   )
     mesh = pyrender.Mesh.from_trimesh(mesh, material=material, smooth=False)
     scene = pyrender.Scene(ambient_light=(0.3, 0.3, 0.3))
     scene.add(mesh, 'mesh')
+
+    # Add markers
+    if markers is not None:
+        marker_radius = 0.005
+        marker_color = np.array([1.0, 0.0, 0.0, 1.0])  # Blue color
+
+        for marker in markers:
+            sphere = trimesh.creation.icosphere(subdivisions=3, radius=marker_radius)
+            sphere.apply_translation(marker)
+            material = pyrender.MetallicRoughnessMaterial(baseColorFactor=marker_color)
+            marker_mesh = pyrender.Mesh.from_trimesh(sphere, material=material)
+            scene.add(marker_mesh)
 
     focal, princpt = cam_param['focal'], cam_param['princpt']
     camera = pyrender.IntrinsicsCamera(fx=focal[0], fy=focal[1], cx=princpt[0], cy=princpt[1])
@@ -273,7 +379,7 @@ from pytorch3d.renderer import (
 from pytorch3d.structures import Meshes
 
 
-def multiple_render(samples, denormalize_fn, model, target_path, img_name, part='body', convert=True, distance=7.0,
+def multiple_render(samples, denormalize_fn, model, target_path, img_name, markers=None, part='body', convert=True, distance=7.0,
                     idx_map=None, faster=True, device=None, bg_img=None, focal=None, princpt=None, view='front'):
     """
     General function to render multiple body or hand samples.
@@ -315,18 +421,25 @@ def multiple_render(samples, denormalize_fn, model, target_path, img_name, part=
         output = model(hand_pose=samples)
     elif part == 'face':
         if isinstance(samples, dict):
-            output = model(jaw_pose=samples['jaw_pose'], expression=samples['expression'])
+            assert 'jaw_pose' in samples and 'expression' in samples, "Jaw pose and expression should be provided."
+            output = model(**samples)
         else:
             output = model(face_params=samples)
+    elif part == 'full-face':
+        if isinstance(samples, dict):
+            assert 'jaw_pose' in samples and 'expression' in samples and 'betas' in samples
+            output = model(**samples)
+        else:
+            output = model(full_face_params=samples)
     elif part == 'whole-body':
         if isinstance(samples, dict):
             output = model(body_pose=samples['body_pose'], left_hand_pose=samples['left_hand_pose'],
                            right_hand_pose=samples['right_hand_pose'], jaw_pose=samples['jaw_pose'],
                            expression=samples['expression'])
         else:
-            output = model(whole_body_params=samples)
+            output = model(wholebody_params=samples)
     else:
-        raise ValueError("Invalid part specified. Choose 'body' or 'hand'.")
+        raise ValueError("Invalid part specified. Supported parts are 'body', 'hand', 'face', 'full-face', 'whole-body'")
 
     if faster:
         assert device is not None
@@ -336,8 +449,8 @@ def multiple_render(samples, denormalize_fn, model, target_path, img_name, part=
         faces = output.f.cpu().numpy()
         for idx in range(sample_num):
             mesh = meshes[idx]
-            rendered_img = render_mesh(bg_img, mesh, faces, {'focal': focal, 'princpt': princpt},
-                                       view=view, distance=distance)
+            rendered_img = render_mesh(bg_img, mesh, faces, {'focal': focal, 'princpt': princpt}, view=view,
+                                       distance=distance, markers=markers[idx] if markers is not None else None)
             save_idx = idx if idx_map is None else idx_map[idx]
             cv2.imwrite(os.path.join(target_path, img_name.format(save_idx + 1)), rendered_img)
 
@@ -427,7 +540,8 @@ class Renderer(object):
             mesh = trimesh.Trimesh(verts[n], self.faces)
             mesh.apply_transform(rot)
             if self.same_mesh_color:
-                mesh_color = (0.4, 0.6, 0.93, 1.0)
+                mesh_color = (0.4, 0.6, 0.93, 1.0)  # common color (light-blue)
+                # mesh_color = (0.93, 0.6, 0.4, 1.0)    # hand hmr color (light-orange)
             else:
                 mesh_color = colorsys.hsv_to_rgb(float(n) / num_people, 0.5, 1.0)
             material = pyrender.MetallicRoughnessMaterial(
@@ -463,7 +577,7 @@ class Renderer(object):
         centroid[:2] = 0
         aroundy = cv2.Rodrigues(np.array([0, np.radians(90.), 0]))[0][np.newaxis, ...]  # 1*3*3
         pred_vert_arr_side = np.matmul((verts - centroid), aroundy) + centroid
-        side_view = self.render_front_view(pred_vert_arr_side)
+        side_view = self.render_front_view(pred_vert_arr_side, bg_color=(1.0, 1.0, 1.0, 0))
         return side_view
 
     def delete(self):

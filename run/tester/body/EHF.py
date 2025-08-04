@@ -22,17 +22,14 @@ from .smplify import SMPLify
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--prior', type=str, default='DPoser', choices=['DPoser', 'GMM', 'VPoser', 'Posendf', 'None'],
-                    help='Our prior model or competitors')
+parser.add_argument('--prior', type=str, default='DPoser', choices=['DPoser', 'None'],)
 parser.add_argument('--ckpt-path', type=str,
-                    default='./pretrained_models/amass/BaseMLP/epoch=36-step=150000-val_mpjpe=38.17.ckpt',
+                    default='./pretrained_models/body/BaseMLP/last.ckpt',
                     help='load trained diffusion model for DPoser')
 parser.add_argument('--config-path', type=str, default='configs.body.subvp.timefc.get_config',
                     help='config files to build DPoser')
 
-parser.add_argument('--dataset-folder', type=str,
-                    default='./body_data', help='dataset root')
-parser.add_argument('--version', type=str, default='version1', help='dataset version')
+parser.add_argument('--data-path', type=str, default='./data/body_data',)
 parser.add_argument('--bodymodel-path', type=str, default='../body_models/smplx/SMPLX_NEUTRAL.npz',
                     help='path of SMPLX model')
 

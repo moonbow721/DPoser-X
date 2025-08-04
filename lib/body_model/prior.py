@@ -96,7 +96,7 @@ class L2Prior(nn.Module):
 
     def forward(self, module_input, *args):
         # l2_norm = torch.norm(module_input, p=2, dim=[-1], keepdim=True)
-        return torch.mean(module_input.pow(2).sum(dim=-1)) * 0.1
+        return torch.mean(module_input.pow(2).sum(dim=-1))
 
 
 class MaxMixturePrior(nn.Module):
@@ -260,48 +260,4 @@ class MaxMixturePrior(nn.Module):
 
         return samples
 
-
-def quat_flip(pose_in):
-    is_neg = pose_in[:, :, 0] < 0
-    pose_in[is_neg] = (-1) * pose_in[is_neg]
-    return pose_in, is_neg
-
-
-class Posendf(nn.Module):
-    def __init__(self, config, ckpt_path):
-        super().__init__()
-        sys.path.insert(0, './other_priors/PoseNDF')
-        from model.posendf import PoseNDF
-        from configs.config import load_config
-        opt = load_config(config)
-        net = PoseNDF(opt)
-        ckpt = torch.load(ckpt_path, map_location='cpu')['model_state_dict']
-        net.load_state_dict(ckpt)
-        net.eval()
-        self.pose_prior = net
-
-    def forward(self, pose, betas, *args):
-        pose_quat = axis_angle_to_quaternion(pose.view(-1, 21, 3))
-        pose_quat, _ = quat_flip(pose_quat)
-        pose_quat = torch.nn.functional.normalize(pose_quat, dim=-1)
-
-        dis_val = self.pose_prior(pose_quat, train=False)['dist_pred'] ** 2
-        return torch.mean(dis_val) * 1e6
-
-
-class VPoser(nn.Module):
-    def __init__(self, support_dir):
-        super().__init__()
-        sys.path.insert(0, './other_priors/human_body_prior/src')
-        from human_body_prior.tools.model_loader import load_vposer
-
-        expr_dir = os.path.join(support_dir, 'vposer_v1_0')
-        vposer_pt, ps = load_vposer(expr_dir, vp_model='snapshot')
-        self.vposer = vposer_pt
-
-    def forward(self, pose, betas, *args):
-        assert len(pose.shape) == 2
-        coding = self.vposer.encode(pose).mean
-        l2_norm = torch.norm(coding, p=2, dim=[1], keepdim=True)
-        return torch.mean(l2_norm) * 0.5
 

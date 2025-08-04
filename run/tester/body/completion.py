@@ -40,9 +40,12 @@ flags.mark_flags_as_required(["config"])
 def parse_args(argv):
     parser = argparse_flags.ArgumentParser(description='test diffusion model for completion on whole AMASS')
 
-    parser.add_argument('--ckpt-path', type=str, default='./pretrained_models/amass/BaseMLP/epoch=36-step=150000-val_mpjpe=38.17.ckpt')
+    parser.add_argument('--ckpt-path', type=str,
+                        default='./pretrained_models/body/BaseMLP/last.ckpt',
+                        help='load trained diffusion model')
+    parser.add_argument('--data-path', type=str, default='./data/body_data',)
     parser.add_argument('--dataset-folder', type=str,
-                        default='../data/human/Bodydataset/amass_processed',
+                        default='./data/body_data',
                         help='the folder includes necessary normalizing parameters')
     parser.add_argument('--version', type=str, default='version1', help='dataset version')
     parser.add_argument('--bodymodel-path', type=str, default='../body_models/smplx/SMPLX_NEUTRAL.npz',
@@ -105,7 +108,7 @@ def inference(rank, args, config):
     model = create_model(config.model, N_POSES, POSE_DIM)
     model.to(device)
     model.eval()
-    load_model(model, config, args.ckpt_path, device, is_ema=True)
+    load_model(model, config.model, args.ckpt_path, device, is_ema=True)
 
     # Setup SDEs
     if config.training.sde.lower() == 'vpsde':
@@ -118,10 +121,10 @@ def inference(rank, args, config):
         raise NotImplementedError(f"SDE {config.training.sde} unknown.")
 
     # Setup sampling functions
-    comp_fn = DPoserComp(model, sde, config.training.continuous, batch_size=args.batch_size)
+    comp_fn = DPoserComp(model, sde, config.training.continuous)
     Normalizer = Posenormalizer(
-        data_path=os.path.join(args.dataset_folder, args.version, 'train'),
-        normalize=config.data.normalize, min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=device)
+        data_path=os.path.join(args.data_path, 'body_normalizer'),
+        min_max=config.data.min_max, rot_rep=config.data.rot_rep, device=device)
 
     # Perform completion baselines (ScoreSDE, MCG, DPS)
     task_args = SimpleNamespace(task=None)

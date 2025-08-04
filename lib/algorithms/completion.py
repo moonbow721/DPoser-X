@@ -9,9 +9,8 @@ from lib.algorithms.advanced import utils as mutils
 
 
 class DPoserComp(object):
-    def __init__(self, diffusion_model, sde, continuous, batch_size=1, improve_baseline=False):
-        self.batch_size = batch_size
-        self.improve_baseline = improve_baseline
+    def __init__(self, diffusion_model, sde, continuous, improve_baseline=False):
+        self.improve_baseline = improve_baseline  # this is just a trial, not recommended
         self.sde = sde
         self.score_fn = mutils.get_score_fn(sde, diffusion_model, train=False, continuous=continuous)
         self.rsde = sde.reverse(self.score_fn, True)
@@ -65,7 +64,7 @@ class DPoserComp(object):
 
         return dposer_loss
 
-    # Use reference data to improve the noise baseline, this can enhance the diversity significantly
+    # not used in our experiments
     def improved_loss(self, x_0, x_ref, vec_t, weighted=True, multi_denoise=False):
         # x_0: [B, j*6], x_ref, [B, j*6] vec_t: [B],
         z = torch.randn_like(x_0)
@@ -76,8 +75,8 @@ class DPoserComp(object):
 
         if multi_denoise:  # not recommended
             t_end = torch.ones_like(vec_t) * 0.001
-            denoise_x_0 = self.multi_step_denoise(noisy_x_0, vec_t, t_end=t_end, N=10)
-            denoise_x_ref = self.multi_step_denoise(noisy_x_ref, vec_t, t_end=t_end, N=10)
+            denoise_x_0 = self.multi_step_denoise(noisy_x_0, vec_t, t_end=t_end, N=5)
+            denoise_x_ref = self.multi_step_denoise(noisy_x_ref, vec_t, t_end=t_end, N=5)
         else:
             denoise_x_0 = self.one_step_denoise(noisy_x_0, vec_t)
             denoise_x_ref = self.one_step_denoise(noisy_x_ref, vec_t)
@@ -110,8 +109,9 @@ class DPoserComp(object):
         return tot_loss
 
     def optimize(self, observation, mask, time_strategy='3', lr=0.1,
-                 t_max=0.3, t_min=0.05, t_fixed=0.1,
+                 t_max=0.15, t_min=0.05, t_fixed=0.1,
                  iterations=2, steps_per_iter=100, reset_interval=999):
+        batch_size = observation.size(0)
         observation.requires_grad = False
         rand_noise = torch.randn_like(observation)
         baseline_data = torch.where(mask, observation, rand_noise)
@@ -122,7 +122,7 @@ class DPoserComp(object):
         with torch.enable_grad():
             opti_variable = observation.clone().detach()
             opti_variable.requires_grad = True
-            optimizer = torch.optim.Adam([opti_variable], lr, betas=(0.9, 0.999))
+            optimizer = torch.optim.Adam([opti_variable], lr, betas=(0.9, 0.99))
 
             eps = 1e-3
             for it in range(iterations):
@@ -139,7 +139,7 @@ class DPoserComp(object):
                         t = t_min + torch.tensor(total_steps - step - 1) / total_steps * (t_max - t_min)
                     else:
                         raise NotImplementedError
-                    vec_t = torch.ones(self.batch_size, device=observation.device) * t
+                    vec_t = torch.ones(batch_size, device=observation.device) * t
                     if self.improve_baseline:
                         loss_dict['dposer'] = self.improved_loss(opti_variable, baseline_data, vec_t,)
                     else:

@@ -1,5 +1,7 @@
 import json
 import os
+import random
+from smplx.joint_names import JOINT_NAMES as SMPLX_JOINT_NAMES
 
 import numpy as np
 
@@ -54,6 +56,10 @@ class BodyPartIndices:
     @staticmethod
     def get_indices(part_name):
         return getattr(BodyPartIndices, part_name)
+
+    @staticmethod
+    def get_joint_indices(part_name):
+        return [x+1 for x in getattr(BodyPartIndices, part_name)]   # +1 to account for global_orient
 
 
 class BodySegIndices:
@@ -123,6 +129,100 @@ class HandPartIndices:
                 indices.extend(HandPartIndices.thumb)
 
         return sorted(set(indices))
+
+    @staticmethod
+    def get_joint_indices(part_name):
+        return [x + 1 for x in HandPartIndices.get_indices(part_name)]  # +1 to account for global_orient
+
+
+face_name_to_index = {name: index+5 for index, name in enumerate(SMPLX_JOINT_NAMES[76:])}
+
+
+class FacePartIndices:
+    others = [0, 1, 2, 3, 4]   # neck, backheads, eyeballs
+    left_face = sorted([face_name_to_index[name] for name in face_name_to_index if 'left' in name])
+    right_face = sorted([face_name_to_index[name] for name in face_name_to_index if 'right' in name])
+    middle_face = sorted([face_name_to_index[name] for name in face_name_to_index if 'left' not in name and 'right' not in name])
+
+    @staticmethod
+    def create_mask(mask_type):
+        if mask_type == 'left_face':
+            return FacePartIndices.left_face
+        elif mask_type == 'right_face':
+            return FacePartIndices.right_face
+        elif mask_type == 'half_face':
+            if random.random() < 0.5:
+                return FacePartIndices.left_face
+            else:
+                return FacePartIndices.right_face
+        else:
+            raise ValueError("Invalid mask_type. Choose either 'left_face', 'right_face', or 'half_face'.")
+
+
+# 21 OpenPose hand keypoints
+class OpHandPartIndices:
+    wrist = [0]
+    thumb = [1, 2, 3, 4]
+    index_finger = [5, 6, 7, 8]
+    middle_finger = [9, 10, 11, 12]
+    ring_finger = [13, 14, 15, 16]
+    pinky_finger = [17, 18, 19, 20]
+
+    @staticmethod
+    def get_indices(part_name):
+        # e.g. part_name = 'wrist_index_middle_finger'
+        finger_names = part_name.split('_')
+        indices = []
+
+        for finger in finger_names:
+            if finger == 'wrist':
+                indices.extend(OpHandPartIndices.wrist)
+            elif finger == 'index':
+                indices.extend(OpHandPartIndices.index_finger)
+            elif finger == 'middle':
+                indices.extend(OpHandPartIndices.middle_finger)
+            elif finger == 'pinky':
+                indices.extend(OpHandPartIndices.pinky_finger)
+            elif finger == 'ring':
+                indices.extend(OpHandPartIndices.ring_finger)
+            elif finger == 'thumb':
+                indices.extend(OpHandPartIndices.thumb)
+
+        return sorted(set(indices))
+
+    @staticmethod
+    def create_mask(mask_type):
+        if mask_type == 'only_end_visible':
+            # Exclude [0, 4, 8, 12, 16, 20]
+            all_indices = list(range(21))
+            exclude_indices = [0, 4, 8, 12, 16, 20]
+            result_indices = [i for i in all_indices if i not in exclude_indices]
+            return result_indices
+        elif mask_type == 'partial':
+            # Randomly select two fingers and return their indices
+            fingers = ['thumb', 'index_finger', 'middle_finger', 'ring_finger', 'pinky_finger']
+            selected_fingers = random.sample(fingers, 2)
+            partial_indices = []
+            for finger in selected_fingers:
+                partial_indices.extend(getattr(OpHandPartIndices, finger))
+            return sorted(partial_indices)
+        elif mask_type == 'sparse':  # randomly select 13 indices (8 left visible)
+            all_indices = list(range(21))
+            return random.sample(all_indices, 13)
+        else:
+            raise ValueError("Invalid mask_type. Choose either 'end' or 'partial'.")
+
+
+# 135 OpenPose wholebody keypoints
+class OpWholeBodyPartIndices:
+    body = list(range(25))
+    lhand = list(range(25, 46))
+    rhand = list(range(46, 67))
+    face = list(range(67, 135))
+
+    @staticmethod
+    def get_joint_indices(part_name):
+        return getattr(OpWholeBodyPartIndices, part_name)
 
 
 def get_smpl_skeleton():

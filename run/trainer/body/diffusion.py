@@ -30,14 +30,14 @@ from lib.utils.schedulers import CosineWarmupScheduler
 def parse_args(argv):
     parser = argparse.ArgumentParser(description='train diffusion model')
     parser.add_argument('--config-path', '-c', type=str,
-                        default='configs.subvp.amass_scorefc_continuous.get_config',
+                        default='configs.body.subvp.timefc.get_config',
                         help='config files to build DPoser')
     parser.add_argument('--bodymodel-path', type=str,
                         default='../body_models/smplx/SMPLX_NEUTRAL.npz',
                         help='load SMPLX for visualization')
     parser.add_argument('--resume-ckpt', '-r', type=str, help='resume training')
     parser.add_argument('--data-root', type=str,
-                        default='./body_data', help='dataset root')
+                        default='./data/body_data', help='dataset root')
     parser.add_argument('--version', type=str, default='version1', help='dataset version')
     parser.add_argument('--sample', type=int, help='sample trainset to reduce data')
     parser.add_argument('--name', type=str, default='default', help='name of checkpoint folder')
@@ -181,7 +181,7 @@ class DPoserTrainer(pl.LightningModule):
         self.model_ema.store(self.model.parameters())
         self.model_ema.copy_to(self.model.parameters())
         self.compfn = DPoserComp(self.model, self.sde,
-                                 self.config.training.continuous, batch_size=self.config.eval.batch_size)
+                                 self.config.training.continuous,)
 
     def validation_step(self, batch, batch_idx):
         poses = self.normalize_fn(batch['body_pose'], from_axis=True)
@@ -212,7 +212,7 @@ class DPoserTrainer(pl.LightningModule):
         self.log('APD', APD.item(), sync_dist=True, logger=True)
         self.log('SI', SI.item(), sync_dist=True, logger=True)
 
-        if self.config.training.render:
+        if self.config.training.render and self.last_trajs is not None:
             # Use the stored trajs and all_results of the last batch
             self.render_and_log_images(self.last_trajs, all_results)
 
