@@ -41,8 +41,18 @@ We use human models like [SMPLX](https://smpl-x.is.tue.mpg.de/), [MANO](https://
 
 ## 🚀 3. Quick Demo
 
-* **Pre-trained Model**: Grab the pre-trained DPoser-X models from [here](https://drive.google.com/drive/folders/1Xlgw0qAlkG-Hz1xSFzO-EpND6jJDBnXL?usp=drive_link) and place them in `./pretrained_models`.
+* **Pre-trained Models**: You can download the pre-trained DPoser-X models from either Hugging Face Hub or Google Drive. Place them in the `./pretrained_models` directory.
 
+    * **Option 1: Hugging Face Hub (Recommended)**
+        You can download all required models with a single command using the Hugging Face CLI.
+        ```bash
+        # Make sure you have huggingface-hub installed: pip install huggingface-hub
+        huggingface-cli download Moon-bow/DPoser-X --repo-type model --local-dir pretrained_models --local-dir-use-symlinks False
+        ```
+
+    * **Option 2: Google Drive**
+        Alternatively, you can download the models manually from [here](https://drive.google.com/drive/folders/1Xlgw0qAlkG-Hz1xSFzO-EpND6jJDBnXL?usp=drive_link).
+      
 * **Sample Data**: Check out `./examples` for some samples, including some images with detected keypoints annotation and pose files.
 
 * **Explore DPoser-X Tasks**:
@@ -404,3 +414,4 @@ Big thanks to [ScoreSDE](https://github.com/yang-song/score_sde_pytorch), [GFPos
   year={2025}
 }
 ```
+
