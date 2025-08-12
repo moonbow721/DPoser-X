@@ -19,3 +19,4 @@ pyrender
 trimesh
 pytorch3d
 faiss-gpu
+huggingface-hub
