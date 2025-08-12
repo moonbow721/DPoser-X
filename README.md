@@ -43,15 +43,21 @@ We use human models like [SMPLX](https://smpl-x.is.tue.mpg.de/), [MANO](https://
 
 * **Pre-trained Models**: You can download the pre-trained DPoser-X models from either Hugging Face Hub or Google Drive. Place them in the `./pretrained_models` directory.
 
-    * **Option 1: Hugging Face Hub (Recommended)**
-        You can download all required models with a single command using the Hugging Face CLI.
-        ```bash
-        # Make sure you have huggingface-hub installed: pip install huggingface-hub
-        huggingface-cli download Moon-bow/DPoser-X --repo-type model --local-dir pretrained_models --local-dir-use-symlinks False
-        ```
+  We provide a convenient script to download the pre-trained DPoser-X models from Hugging Face Hub. The script will automatically place the files in the correct `./pretrained_models` directory.
 
-    * **Option 2: Google Drive**
-        Alternatively, you can download the models manually from [here](https://drive.google.com/drive/folders/1Xlgw0qAlkG-Hz1xSFzO-EpND6jJDBnXL?usp=drive_link).
+  To get the models, simply run `download_models.py` from your terminal.
+
+  ```bash
+  # Download all models (default behavior)
+  python download_models.py
+
+  # Download only the body and hand models
+  python download_models.py body hand
+
+  # See all available options and help
+  python download_models.py --help
+  ```
+  For manual downloads, you can still access the files on [Google Drive](https://drive.google.com/drive/folders/1Xlgw0qAlkG-Hz1xSFzO-EpND6jJDBnXL?usp=drive_link) or [Hugging Face Hub](https://huggingface.co/Moon-bow/DPoser-X).
       
 * **Sample Data**: Check out `./examples` for some samples, including some images with detected keypoints annotation and pose files.
 
